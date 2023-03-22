@@ -471,6 +471,7 @@ class TorchFXPythonDecoder (Decoder):
         print(f'[ FX DECODER DEBUG ] Decoder method called: {inspect.currentframe().f_code.co_name}')
         if value and ('tensor_meta' in value.meta.keys()):
             return PartialShape(value.meta['tensor_meta'].shape)
+        #TODO: Invalid shape should be returned if "value" is none.
         return PartialShape([1])
 
     def get_type_for_value(self, value):
@@ -480,6 +481,7 @@ class TorchFXPythonDecoder (Decoder):
             if pt_type in pt_to_ov_type_map:
                 ov_type = pt_to_ov_type_map[pt_type]
                 return OVAny(ov_type)
+        #TODO: Invalid type should be returned if "value" is none.
         return OVAny(OVType.f32)
 
     def get_input_transpose_order(self, index):
