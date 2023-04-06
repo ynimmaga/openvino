@@ -3,7 +3,7 @@
 //
 
 #include "openvino/op/batch_norm.hpp"
-
+#include "openvino/op/util/framework_node.hpp"
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/broadcast.hpp"
 #include "openvino/op/constant.hpp"
@@ -32,7 +32,7 @@ Output<Node> broadcast_const_to_channel_dim(const NodeContext& context,
 }
 }  // namespace
 
-OutputVector translate_batch_norm(NodeContext& context) {
+std::shared_ptr<ov::Node> translate_batch_norm(NodeContext& context) {
     // Schema: aten::batch_norm(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var,
     // bool training, float momentum, float eps, bool cudnn_enabled) -> Tensor
     num_inputs_check(context, 8, 9);
@@ -58,10 +58,25 @@ OutputVector translate_batch_norm(NodeContext& context) {
     auto running_var = context.get_input(4);
     // Input with index 6 is momentum, it is used only in training mode
     auto epsilon = context.const_input<float>(7);
+
     // Input with index 8 is flag "cudnn_enabled" we can ignore it
-    return {context.mark_node(
-        std::make_shared<v5::BatchNormInference>(input, weight, bias, running_mean, running_var, epsilon))};
+    return std::make_shared<v5::BatchNormInference>(input, weight, bias, running_mean, running_var, epsilon);
 };
+
+OutputVector translate_batch_norm_ts(NodeContext& context) {
+    return {context.mark_node(translate_batch_norm(context))};
+}
+
+OutputVector translate_batch_norm_fx(NodeContext& context) {
+    auto output = translate_batch_norm(context);
+    auto out_list = std::make_shared<::ov::op::util::FrameworkNode>(output->outputs(), output->outputs().size());
+    ov::op::util::FrameworkNodeAttrs attrs;
+    attrs.set_type_name("PTFrameworkNode");
+    attrs["PtTypeName"] = "prim::ListConstruct";
+    out_list->set_attrs(attrs);
+    out_list->validate_and_infer_types();
+    return {context.mark_node(out_list)};
+}
 
 }  // namespace op
 }  // namespace pytorch

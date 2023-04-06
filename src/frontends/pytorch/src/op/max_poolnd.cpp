@@ -3,6 +3,7 @@
 //
 
 #include "openvino/frontend/pytorch/node_context.hpp"
+#include "openvino/op/util/framework_node.hpp"
 #include "openvino/op/max_pool.hpp"
 #include "utils.hpp"
 
@@ -13,7 +14,7 @@ namespace op {
 
 using namespace ov::op;
 
-OutputVector translate_max_poolnd(NodeContext& context) {
+std::shared_ptr<ov::Node> translate_max_poolnd(NodeContext& context) {
     num_inputs_check(context, 4, 6);
     auto kernel = context.const_input<Shape>(1);
     auto strides = context.const_input<Strides>(2);
@@ -29,9 +30,23 @@ OutputVector translate_max_poolnd(NodeContext& context) {
         rounding_type = context.const_input<bool>(5) ? RoundingType::CEIL : RoundingType::FLOOR;
     }
 
-    return {context.mark_node(
-        std::make_shared<v8::MaxPool>(context.get_input(0), strides, dilations, pads, pads, kernel, rounding_type))};
+    return std::make_shared<v8::MaxPool>(context.get_input(0), strides, dilations, pads, pads, kernel, rounding_type);
 };
+
+OutputVector translate_max_poolnd_ts(NodeContext& context) {
+    return {context.mark_node(translate_max_poolnd(context))};
+}
+
+OutputVector translate_max_poolnd_fx(NodeContext& context) {
+    auto output = translate_max_poolnd(context);
+    auto out_list = std::make_shared<::ov::op::util::FrameworkNode>(output->outputs(), output->outputs().size());
+    ov::op::util::FrameworkNodeAttrs attrs;
+    attrs.set_type_name("PTFrameworkNode");
+    attrs["PtTypeName"] = "prim::ListConstruct";
+    out_list->set_attrs(attrs);
+    out_list->validate_and_infer_types();
+    return {context.mark_node(out_list)};
+}
 
 }  // namespace op
 }  // namespace pytorch
