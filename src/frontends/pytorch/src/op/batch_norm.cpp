@@ -69,13 +69,7 @@ OutputVector translate_batch_norm_ts(NodeContext& context) {
 
 OutputVector translate_batch_norm_fx(NodeContext& context) {
     auto output = translate_batch_norm(context);
-    auto out_list = std::make_shared<::ov::op::util::FrameworkNode>(output->outputs(), output->outputs().size());
-    ov::op::util::FrameworkNodeAttrs attrs;
-    attrs.set_type_name("PTFrameworkNode");
-    attrs["PtTypeName"] = "prim::ListConstruct";
-    out_list->set_attrs(attrs);
-    out_list->validate_and_infer_types();
-    return {context.mark_node(out_list)};
+    return {context.mark_node(make_list_construct(output->outputs()))};
 }
 
 }  // namespace op
