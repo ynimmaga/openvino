@@ -32,7 +32,7 @@ Output<Node> broadcast_const_to_channel_dim(const NodeContext& context,
 }
 }  // namespace
 
-std::shared_ptr<ov::Node> translate_batch_norm(NodeContext& context) {
+OutputVector translate_batch_norm(NodeContext& context) {
     // Schema: aten::batch_norm(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var,
     // bool training, float momentum, float eps, bool cudnn_enabled) -> Tensor
     num_inputs_check(context, 8, 9);
@@ -60,16 +60,12 @@ std::shared_ptr<ov::Node> translate_batch_norm(NodeContext& context) {
     auto epsilon = context.const_input<float>(7);
 
     // Input with index 8 is flag "cudnn_enabled" we can ignore it
-    return std::make_shared<v5::BatchNormInference>(input, weight, bias, running_mean, running_var, epsilon);
+    return {context.mark_node(std::make_shared<v5::BatchNormInference>(input, weight, bias, running_mean, running_var, epsilon))};
 };
-
-OutputVector translate_batch_norm_ts(NodeContext& context) {
-    return {context.mark_node(translate_batch_norm(context))};
-}
 
 OutputVector translate_batch_norm_fx(NodeContext& context) {
     auto output = translate_batch_norm(context);
-    return {context.mark_node(make_list_construct(output->outputs()))};
+    return {context.mark_node(make_list_construct(output))};
 }
 
 }  // namespace op

@@ -24,7 +24,7 @@ OP_CONVERTER(translate_argsort);
 OP_CONVERTER(translate_as_tensor);
 OP_CONVERTER(translate_avg_poolnd);
 OP_CONVERTER(translate_bool);
-OP_CONVERTER(translate_batch_norm_ts);
+OP_CONVERTER(translate_batch_norm);
 OP_CONVERTER(translate_batch_norm_fx);
 OP_CONVERTER(translate_bitwise_not);
 OP_CONVERTER(translate_cat);
@@ -70,7 +70,7 @@ OP_CONVERTER(translate_log2);
 OP_CONVERTER(translate_loop);
 OP_CONVERTER(translate_masked_fill);
 OP_CONVERTER(translate_max);
-OP_CONVERTER(translate_max_poolnd_ts);
+OP_CONVERTER(translate_max_poolnd);
 OP_CONVERTER(translate_max_poolnd_fx);
 OP_CONVERTER(translate_mean);
 OP_CONVERTER(translate_meshgrid);
@@ -171,7 +171,7 @@ const std::map<std::string, PytorchCreatorFunction> get_supported_ops() {
         {"aten::avg_pool2d", op::translate_avg_poolnd},
         {"aten::avg_pool3d", op::translate_avg_poolnd},
         {"aten::baddbmm", op::translate_addmm},
-        {"aten::batch_norm", op::translate_batch_norm_ts},
+        {"aten::batch_norm", op::translate_batch_norm},
         {"aten::bitwise_not", op::translate_bitwise_not},
         {"aten::bmm", op::translate_1to1_match_2_inputs<opset10::MatMul>},
         {"aten::Bool", op::translate_bool},
@@ -251,10 +251,10 @@ const std::map<std::string, PytorchCreatorFunction> get_supported_ops() {
         {"aten::matmul", op::translate_1to1_match_2_inputs<opset10::MatMul>},
         {"aten::matmul", op::translate_1to1_match_2_inputs<opset10::MatMul>},
         {"aten::max", op::translate_max},
-        {"aten::max_pool1d", op::translate_max_poolnd_ts},
-        {"aten::max_pool2d", op::translate_max_poolnd_ts},
+        {"aten::max_pool1d", op::translate_max_poolnd},
+        {"aten::max_pool2d", op::translate_max_poolnd},
         {"aten.max_pool2d_with_indices.default", op::translate_max_poolnd_fx},
-        {"aten::max_pool3d", op::translate_max_poolnd_ts},
+        {"aten::max_pool3d", op::translate_max_poolnd},
         {"aten::mean", op::translate_mean},
         {"aten.mean.dim", op::translate_mean},
         {"aten::meshgrid", op::translate_meshgrid},

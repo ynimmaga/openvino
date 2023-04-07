@@ -14,7 +14,7 @@ namespace op {
 
 using namespace ov::op;
 
-std::shared_ptr<ov::Node> translate_max_poolnd(NodeContext& context) {
+OutputVector translate_max_poolnd(NodeContext& context) {
     num_inputs_check(context, 4, 6);
     auto kernel = context.const_input<Shape>(1);
     auto strides = context.const_input<Strides>(2);
@@ -30,16 +30,12 @@ std::shared_ptr<ov::Node> translate_max_poolnd(NodeContext& context) {
         rounding_type = context.const_input<bool>(5) ? RoundingType::CEIL : RoundingType::FLOOR;
     }
 
-    return std::make_shared<v8::MaxPool>(context.get_input(0), strides, dilations, pads, pads, kernel, rounding_type);
+    return {context.mark_node(std::make_shared<v8::MaxPool>(context.get_input(0), strides, dilations, pads, pads, kernel, rounding_type))};
 };
-
-OutputVector translate_max_poolnd_ts(NodeContext& context) {
-    return {context.mark_node(translate_max_poolnd(context))};
-}
 
 OutputVector translate_max_poolnd_fx(NodeContext& context) {
     auto output = translate_max_poolnd(context);
-    return {context.mark_node(make_list_construct(output->outputs()))};
+    return {context.mark_node(make_list_construct(output))};
 }
 
 }  // namespace op
