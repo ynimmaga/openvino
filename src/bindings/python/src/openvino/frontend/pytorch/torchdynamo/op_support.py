@@ -153,23 +153,34 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.native_batch_norm.default": None,
             "torch.ops.aten.relu_.default": None,
             "torch.ops.aten.max_pool2d_with_indices.default": None,
-            "torch.ops.aten.add.Tensor": None,
+            "torch.ops.aten.add.Tensor": None, #comment this for stable diffusion
             "torch.ops.aten.add_.Tensor": None,
             "torch.ops.aten.mean.dim": None,
-            "torch.ops.aten.view.default": None,
+            "torch.ops.aten.view.default": None, #comment this for stable diffusion
             "torch.ops.aten.sigmoid.default": None,
             "torch.ops.aten.silu_.default": None,
             "torch.ops.aten.addmm.default": None,
             "_operator.getitem": None,
-            "torch.ops.aten.t.default": None,
+            "torch.ops.aten.t.default": None, #comment this for stable diffusion
             "torch.ops.aten.empty.memory_format": None,
             "torch.ops.aten.mul.Tensor": None,
-            "torch.ops.aten.cat.default": None,
+            "torch.ops.aten.cat.default": None, #comment this for stable diffusion
             "torch.ops.aten.avg_pool2d.default": None,
             "torch.ops.aten._adaptive_avg_pool2d.default": None,
             "torch.ops.aten.unsqueeze.default": None,
             "torch.ops.aten.select.int": None,
             "torch.ops.aten.slice.Tensor": None,
+            "torch.ops.aten.transpose.int": None, #comment this for stable diffusion
+            "torch.ops.aten.expand.default": None,
+            "torch.ops.aten.sin.default": None,
+            "torch.ops.aten.cos.default": None,
+            "torch.ops.aten.mm.default": None,
+            "torch.ops.aten.div.Tensor": None,
+            "torch.ops.aten._to_copy.default": None,
+            "torch.ops.aten.arange.start": None, #comment this for stable diffusion
+            "torch.ops.aten.exp.default": None,
+            "torch.ops.aten.silu.default": None, #comment this for stable diffusion
+
         }
 
         super().__init__(support_dict)

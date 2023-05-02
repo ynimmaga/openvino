@@ -406,6 +406,17 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.unsqueeze.default", op::translate_1to1_match_2_inputs<opset10::Unsqueeze>},
         {"aten.select.int", op::translate_select},
         {"aten.slice.Tensor", op::translate_slice_fx},
+        {"aten.transpose.int", op::translate_transpose},
+        {"aten.expand.default", op::translate_expand},
+        {"aten.sin.default", op::translate_1to1_match_1_inputs<opset10::Sin>},
+        {"aten.cos.default", op::translate_1to1_match_1_inputs<opset10::Cos>},
+        {"aten.mm.default", op::translate_1to1_match_2_inputs<opset10::MatMul>},
+        {"aten.div.Tensor", op::translate_div},
+        {"aten._to_copy.default", op::skip_node},
+        {"aten.arange.start", op::translate_arange},
+        {"aten.exp.default", op::translate_1to1_match_1_inputs<opset10::Exp>},
+        {"aten.silu.default", op::translate_1to1_match_1_inputs<opset10::Swish>},
+
     };
 };
 
