@@ -30,6 +30,7 @@ OP_CONVERTER(translate_batch_norm);
 OP_CONVERTER(translate_bitwise_not);
 OP_CONVERTER(translate_cat);
 OP_CONVERTER(translate_cat_fx);
+OP_CONVERTER(translate_chunk);
 OP_CONVERTER(translate_clamp);
 OP_CONVERTER(translate_constant);
 OP_CONVERTER(translate_conv_transposend);
@@ -105,6 +106,7 @@ OP_CONVERTER(translate_roi_align);
 OP_CONVERTER(translate_roll);
 OP_CONVERTER(translate_rsqrt);
 OP_CONVERTER(translate_rsub);
+OP_CONVERTER(translate_scaled_dot_product_attention);
 OP_CONVERTER(translate_select);
 OP_CONVERTER(translate_set_item);
 OP_CONVERTER(translate_selu);
@@ -186,6 +188,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_ts() {
         {"aten::cat", op::translate_cat},
         {"aten::ceil", op::translate_1to1_match_1_inputs<opset10::Ceiling>},
         {"aten::ceil_", op::inplace_op<op::translate_1to1_match_1_inputs<opset10::Ceiling>>},
+        {"aten::chunk", op::translate_chunk},
         {"aten::clamp", op::translate_clamp},
         {"aten::clamp_max", op::translate_1to1_match_2_inputs<opset10::Minimum>},
         {"aten::clamp_min", op::translate_1to1_match_2_inputs<opset10::Maximum>},
@@ -299,6 +302,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_ts() {
         {"aten::rsqrt", op::translate_rsqrt},
         {"aten::rsub", op::translate_rsub},
         {"aten::ScalarImplicit", op::skip_node},
+        {"aten::scaled_dot_product_attention", op::translate_scaled_dot_product_attention},
         {"aten::select", op::translate_select},
         {"aten::selu", op::translate_selu},
         {"aten::selu_", op::inplace_op<op::translate_selu>},
