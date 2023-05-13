@@ -157,6 +157,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.add_.Tensor": None,
             "torch.ops.aten.mean.dim": None,
             "torch.ops.aten.view.default": None, #comment this for stable diffusion
+            "torch.ops.aten._unsafe_view.default": None, #comment this for stable diffusion
             "torch.ops.aten.sigmoid.default": None,
             "torch.ops.aten.silu_.default": None,
             "torch.ops.aten.addmm.default": None,
@@ -176,10 +177,19 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.cos.default": None,
             "torch.ops.aten.mm.default": None,
             "torch.ops.aten.div.Tensor": None,
+            "torch.ops.aten.div.Scalar": None,
             "torch.ops.aten._to_copy.default": None,
             "torch.ops.aten.arange.start": None, #comment this for stable diffusion
             "torch.ops.aten.exp.default": None,
             "torch.ops.aten.silu.default": None, #comment this for stable diffusion
+            "torch.ops.aten.clone.default": None,
+            "torch.ops.aten.bmm.default": None,
+            "torch.ops.aten.gelu.default": None,
+            "torch.ops.aten.native_group_norm.default": None,
+            "torch.ops.aten.native_layer_norm.default": None,
+            "torch.ops.aten._softmax.default": None,
+            "torch.ops.aten.split.Tensor": None,
+            "torch.ops.aten.upsample_nearest2d.default": None,
 
         }
 
