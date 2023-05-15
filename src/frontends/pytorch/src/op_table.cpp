@@ -422,13 +422,21 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.exp.default", op::translate_1to1_match_1_inputs<opset10::Exp>},
         {"aten.silu.default", op::translate_1to1_match_1_inputs<opset10::Swish>},
         {"aten.clone.default", op::skip_node},       // ignore clone operators that are inserted by PyTorch autograd
-        {"aten.bmm.default", op::translate_1to1_match_2_inputs<opset10::MatMul>},
+        {"aten.bmm.default", op::translate_1to1_match_2_inputs_align_types<opset10::MatMul>},
         {"aten.gelu.default", op::translate_gelu},
         {"aten.native_group_norm.default", op::translate_group_norm_fx},
         {"aten.native_layer_norm.default", op::translate_layer_norm},
         {"aten._softmax.default", op::translate_softmax_fx},
         {"aten.upsample_nearest2d.default", op::translate_upsample_nearest2d},
         {"aten.split.Tensor", op::translate_chunk_fx},
+        {"aten.embedding.default", op::translate_embedding},
+        {"aten.rsub.Scalar", op::translate_rsub},
+        {"aten.permute.default", op::translate_1to1_match_2_inputs<opset10::Transpose>},
+        {"aten.detach.default", op::skip_node},
+        {"aten.tanh.default", op::translate_1to1_match_1_inputs<opset10::Tanh>},
+        {"aten.pow.Tensor_Scalar", op::translate_pow},
+        {"aten.where.self", op::translate_where},
+        {"aten.full.default", op::translate_full},
 
     };
 };
