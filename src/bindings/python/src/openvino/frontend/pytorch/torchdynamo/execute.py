@@ -61,7 +61,7 @@ def openvino_execute(gm: GraphModule, *args, executor_parameters=None, partition
     )
     global compiled_cache
 
-    if use_cache and len(compiled_cache) == max_openvino_partitions:
+    if use_cache and (partition_id in compiled_cache):
         compiled = compiled_cache[partition_id]
     else:
         compiled = openvino_compile(gm, *args)
