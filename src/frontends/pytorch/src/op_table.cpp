@@ -141,10 +141,12 @@ OP_CONVERTER(translate_where);
 OP_CONVERTER(translate_zeros);
 OP_CONVERTER(translate_zeros_like);
 //Torch FX Translations
+OP_CONVERTER(translate_arange_fx);
 OP_CONVERTER(translate_batch_norm_fx);
 OP_CONVERTER(translate_cat_fx);
 OP_CONVERTER(translate_chunk_fx);
 OP_CONVERTER(translate_group_norm_fx);
+OP_CONVERTER(translate_layer_norm_fx);
 OP_CONVERTER(translate_max_poolnd_fx);
 OP_CONVERTER(translate_slice_fx);
 OP_CONVERTER(translate_softmax_fx);
@@ -391,7 +393,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.add.Tensor", op::translate_add},
         {"aten.add_.Tensor", op::translate_add},
         {"aten.addmm.default", op::translate_addmm},
-        {"aten.arange.start", op::translate_arange},
+        {"aten.arange.start", op::translate_arange_fx},
         {"aten.avg_pool2d.default", op::translate_avg_poolnd},
         {"aten.bmm.default", op::translate_1to1_match_2_inputs_align_types<opset10::MatMul>},
         {"aten.cat.default", op::translate_cat_fx},
@@ -416,7 +418,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.mul.Tensor", op::translate_1to1_match_2_inputs_align_types<opset10::Multiply>},
         {"aten.native_batch_norm.default", op::translate_batch_norm_fx},
         {"aten.native_group_norm.default", op::translate_group_norm_fx},
-        {"aten.native_layer_norm.default", op::translate_layer_norm},
+        {"aten.native_layer_norm.default", op::translate_layer_norm_fx},
         {"aten.permute.default", op::translate_1to1_match_2_inputs<opset10::Transpose>},
         {"aten.pow.Tensor_Scalar", op::translate_pow},
         {"aten.relu.default", op::translate_1to1_match_1_inputs<opset10::Relu>},
