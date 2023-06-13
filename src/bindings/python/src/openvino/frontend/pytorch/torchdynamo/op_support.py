@@ -207,6 +207,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.sin.default": None,
             "torch.ops.aten.slice.Tensor": None,
             "torch.ops.aten.split.Tensor": None,
+            "torch.ops.aten.stack.default": None,
             "torch.ops.aten.sub.default": None,
             "torch.ops.aten.sub.Tensor": None,
             "torch.ops.aten.t.default": None,
