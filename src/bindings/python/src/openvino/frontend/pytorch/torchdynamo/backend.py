@@ -105,6 +105,7 @@ def ts_openvino(subgraph, example_inputs):
         return compile_fx(subgraph, example_inputs)
 
 def fx_openvino(subgraph, example_inputs):
+    print("----Initializing OpenVINO backend----")
     try:
         model = make_fx(subgraph)(*example_inputs)
         with torch.no_grad():
