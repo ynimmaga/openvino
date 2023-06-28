@@ -147,6 +147,7 @@ OP_CONVERTER(translate_batch_norm_fx);
 OP_CONVERTER(translate_cat_fx);
 OP_CONVERTER(translate_chunk_fx);
 OP_CONVERTER(translate_group_norm_fx);
+OP_CONVERTER(translate_index_fx);
 OP_CONVERTER(translate_layer_norm_fx);
 OP_CONVERTER(translate_max_poolnd_fx);
 OP_CONVERTER(translate_slice_fx);
@@ -416,7 +417,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.hardsigmoid.default", op::translate_1to1_match_1_inputs<opset10::HSigmoid>},
         {"aten.hardswish_.default", op::inplace_op<op::translate_1to1_match_1_inputs<opset10::HSwish>>},
         {"aten.hardtanh_.default", op::inplace_op<op::translate_hardtanh>},
-        {"aten.index.Tensor", op::translate_index_select},
+        {"aten.index.Tensor", op::translate_index_fx},
         {"aten.linalg_vector_norm.default", op::translate_linalg_vector_norm},
         {"aten.lt.Tensor", op::translate_1to1_match_2_inputs_align_types<opset10::Less>},
         {"aten.masked_fill_.Scalar", op::inplace_op<op::translate_masked_fill>},
