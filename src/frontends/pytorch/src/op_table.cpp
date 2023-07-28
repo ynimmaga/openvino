@@ -186,6 +186,7 @@ OP_CONVERTER(translate_index_fx);
 OP_CONVERTER(translate_layer_norm_fx);
 OP_CONVERTER(translate_max_poolnd_fx);
 OP_CONVERTER(translate_min_fx);
+OP_CONVERTER(translate_mul_fx);
 OP_CONVERTER(translate_slice_fx);
 OP_CONVERTER(translate_softmax_fx);
 OP_CONVERTER(translate_transpose_fx);
@@ -520,7 +521,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.mean.dim", op::translate_mean},
         {"aten.minimum.default", op::translate_min_fx},
         {"aten.mm.default", op::translate_1to1_match_2_inputs<opset10::MatMul>},
-        {"aten.mul.Tensor", op::translate_1to1_match_2_inputs_align_types<opset10::Multiply>},
+        {"aten.mul.Tensor", op::translate_mul_fx}, 
         {"aten.mul.Scalar", op::translate_1to1_match_2_inputs_align_types<opset10::Multiply>},
         {"aten.native_batch_norm.default", op::translate_batch_norm_fx},
         {"aten.native_group_norm.default", op::translate_group_norm_fx},

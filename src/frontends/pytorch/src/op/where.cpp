@@ -4,6 +4,7 @@
 
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/convert_like.hpp"
 #include "openvino/op/select.hpp"
 #include "utils.hpp"
 
@@ -21,6 +22,7 @@ OutputVector translate_where(const NodeContext& context) {
     auto bool_cond = context.mark_node(std::make_shared<v0::Convert>(cond, element::boolean));
     auto x = context.get_input(1);
     auto y = context.get_input(2);
+    y = context.mark_node(std::make_shared<v1::ConvertLike>(y, x));
     return {context.mark_node(std::make_shared<v1::Select>(bool_cond, x, y))};
 };
 
