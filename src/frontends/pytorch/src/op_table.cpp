@@ -185,6 +185,7 @@ OP_CONVERTER(translate_group_norm_fx);
 OP_CONVERTER(translate_index_fx);
 OP_CONVERTER(translate_layer_norm_fx);
 OP_CONVERTER(translate_max_poolnd_fx);
+OP_CONVERTER(translate_min_fx);
 OP_CONVERTER(translate_slice_fx);
 OP_CONVERTER(translate_softmax_fx);
 OP_CONVERTER(translate_transpose_fx);
@@ -472,6 +473,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten._softmax.default", op::translate_softmax_fx},
         {"aten._to_copy.default", op::skip_node},
         {"aten._unsafe_view.default", op::translate_reshape},
+        {"aten.abs.default", op::translate_1to1_match_1_inputs<opset10::Abs>},
         {"aten.add.Tensor", op::translate_add},
         {"aten.add_.Tensor", op::translate_add},
         {"aten.addmm.default", op::translate_addmm},
@@ -498,6 +500,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.exp.default", op::translate_1to1_match_1_inputs<opset10::Exp>},
         {"aten.expand.default", op::translate_expand_fx},
         {"aten.full.default", op::translate_full},
+        {"aten.full_like.default", op::translate_full_like},
         {"aten.gather.default", op::translate_gather},
         {"aten.gelu.default", op::translate_gelu},
         {"aten.gt.Scalar", op::translate_1to1_match_2_inputs_align_types<opset10::Greater>},
@@ -509,11 +512,13 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.linalg_vector_norm.default", op::translate_linalg_vector_norm},
         {"aten.log.default", op::translate_log},
         {"aten.logsumexp.default", op::translate_logsumexp},
+        {"aten.lt.Scalar", op::translate_1to1_match_2_inputs_align_types<opset10::Less>},
         {"aten.lt.Tensor", op::translate_1to1_match_2_inputs_align_types<opset10::Less>},
         {"aten.masked_fill_.Scalar", op::inplace_op<op::translate_masked_fill>},
         {"aten.masked_fill.Tensor", op::translate_masked_fill},
         {"aten.max_pool2d_with_indices.default", op::translate_max_poolnd_fx},
         {"aten.mean.dim", op::translate_mean},
+        {"aten.minimum.default", op::translate_min_fx},
         {"aten.mm.default", op::translate_1to1_match_2_inputs<opset10::MatMul>},
         {"aten.mul.Tensor", op::translate_1to1_match_2_inputs_align_types<opset10::Multiply>},
         {"aten.mul.Scalar", op::translate_1to1_match_2_inputs_align_types<opset10::Multiply>},
@@ -526,6 +531,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.pow.Tensor_Scalar", op::translate_pow},
         {"aten.relu.default", op::translate_1to1_match_1_inputs<opset10::Relu>},
         {"aten.relu_.default", op::inplace_op<op::translate_1to1_match_1_inputs<opset10::Relu>>},
+        {"aten.rsqrt.default", op::translate_rsqrt},
         {"aten.rsub.Scalar", op::translate_rsub},
         {"aten.select.int", op::translate_select},
         {"aten.sigmoid.default", op::translate_1to1_match_1_inputs<opset10::Sigmoid>},

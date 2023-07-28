@@ -5,6 +5,7 @@
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/convert_like.hpp"
 #include "openvino/op/maximum.hpp"
 #include "openvino/op/minimum.hpp"
 #include "openvino/op/reduce_max.hpp"
@@ -62,6 +63,35 @@ OutputVector translate_min(const NodeContext& context) {
     // torch.min(input, other)
     if (context.input_is_none(2)) {
         auto y = context.get_input(1);
+        return {context.mark_node(std::make_shared<v1::Minimum>(x, y))};
+    }
+    // torch.min(input, dim, keepdim), returns values and indicies
+    auto axes_node = context.get_input(1);
+    auto axis_const = context.const_input<int64_t>(1);
+    auto keepdims = context.const_input<bool>(2);
+    auto values = context.mark_node(std::make_shared<v1::ReduceMin>(x, axes_node, keepdims));
+    auto k = context.mark_node(std::make_shared<v0::Constant>(element::i32, Shape{}, 1));
+    auto topk = std::make_shared<v3::TopK>(x, k, axis_const, v3::TopK::Mode::MIN, v3::TopK::SortType::NONE);
+    auto indicies = context.mark_node(std::make_shared<v0::Convert>(topk->output(1), element::i64));
+    if (!keepdims) {
+        indicies = std::make_shared<v0::Squeeze>(indicies, axes_node);
+    }
+    return {values, indicies};
+};
+
+OutputVector translate_min_fx(const NodeContext& context) {
+    // torch.min (same for torch.max) actually has two interfaces smashed together:
+    // torch.min(x, dim, keepdim) and torch.min(x, y)
+    num_inputs_check(context, 1, 3);
+    auto x = context.get_input(0);
+    // torch.min(input)
+    if (context.input_is_none(1) && context.input_is_none(2)) {
+        auto axes = get_axes_range(context, 0);
+        return {context.mark_node(std::make_shared<v1::ReduceMin>(x, axes, false))};
+    }
+    // torch.min(input, axis)
+    if (context.input_is_none(2)) {
+        auto y = context.mark_node(std::make_shared<ov::op::v1::ConvertLike>(context.get_input(1), x));
         return {context.mark_node(std::make_shared<v1::Minimum>(x, y))};
     }
     // torch.min(input, dim, keepdim), returns values and indicies
