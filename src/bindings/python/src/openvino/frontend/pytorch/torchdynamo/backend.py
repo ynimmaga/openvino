@@ -23,6 +23,14 @@ from openvino.frontend.pytorch.torchdynamo.execute import execute
 
 log = logging.getLogger(__name__)
 
+def check_if_dynamo_supported():
+    import sys
+    # Skip checking for Windows support for the OpenVINO backend
+    if sys.version_info >= (3, 12):
+        raise RuntimeError("Python 3.12+ not yet supported for torch.compile")
+    
+torch._dynamo.eval_frame.check_if_dynamo_supported = check_if_dynamo_supported
+
 """
     This is a preview feature in OpenVINO. Torchscript backend
     enables users to compile PyTorch models using torch.compile
