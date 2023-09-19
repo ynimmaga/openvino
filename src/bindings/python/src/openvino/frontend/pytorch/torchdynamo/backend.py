@@ -45,6 +45,16 @@ log = logging.getLogger(__name__)
 @register_backend
 @fake_tensor_unsupported
 def openvino(subgraph, example_inputs):
+    print("OV compile backend called")
+    from nncf.torch.dynamic_graph.context import get_compression_state
+    from nncf.torch import disable
+    nncf_state = get_compression_state()
+    if nncf_state is not None:
+        print("Calling NNCF compression translator")
+        from nncf.torch.quantization.compile import translate_compression
+        subgraph = translate_compression(subgraph, nncf_state)
+        with disable():
+            return fx_openvino(subgraph, example_inputs)
     return fx_openvino(subgraph, example_inputs)
 
 @register_backend
