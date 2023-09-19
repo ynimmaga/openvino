@@ -30,6 +30,7 @@ class OperatorSupport(OperatorSupport):
         support_dict = {
             "_operator.getitem": None,
             "torch.ops.aten._adaptive_avg_pool2d.default": None,
+            "torch.ops.aten._fake_quantize_per_tensor_affine_cachemask_tensor_qparams.default": None,
             "torch.ops.aten._softmax.default": None,
             "torch.ops.aten._to_copy.default": None,
             "torch.ops.aten._unsafe_view.default": None,
@@ -59,6 +60,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.eq.Tensor": None,
             "torch.ops.aten.exp.default": None,
             "torch.ops.aten.expand.default": None,
+            "torch.ops.aten.fake_quantize_per_channel_affine_cachemask.default" : None,
             "torch.ops.aten.full.default": None,
             "torch.ops.aten.gather.default": None,
             "torch.ops.aten.gelu.default": None,
@@ -84,6 +86,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.native_layer_norm.default": None,
             "torch.ops.aten.neg.default": None,
             "torch.ops.aten.new_ones.default": None,
+            "torch.ops.aten.ones.default": None,
             "torch.ops.aten.permute.default": None,
             "torch.ops.aten.pow.Tensor_Scalar": None,
             "torch.ops.aten.relu.default": None,
