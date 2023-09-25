@@ -14,12 +14,50 @@ from torch.fx.node import Node, _get_qualified_name
 from torch.fx.passes.operator_support import OperatorSupport
 from torch.fx.passes.tools_common import CALLABLE_NODE_OPS
 
+from torch.fx.experimental.proxy_tensor import DecompositionInterpreter
+from torch._decomp import decomposition_table
+from torch.utils._pytree import tree_flatten, tree_map, tree_unflatten
+
 import typing as t
 
 import logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
+
+def aten_to_dtype(self, dtype: torch.dtype, **kwargs):
+    if len(kwargs) > 0 or not dtype:
+        raise RuntimeError("No support for other to.dtype() formats other than to.dtype(self, dtype)")
+    return torch._prims.convert_element_type(self, dtype)
+
+# decomposition_table currently contains both aten2aten and aten2prim decomposition
+# this is a hack to separate them, as we only need aten2prim decomposition for nvfuser-supported aten graph lowering
+aten2aten_decomp = {}
+aten2prim_decomp = {}
+
+for op, decomp_fn in decomposition_table.items():
+    if "torch._refs" in decomp_fn.__module__:
+        aten2prim_decomp[op] = decomp_fn
+    else:
+        aten2aten_decomp[op] = decomp_fn
+
+aten2aten_decomp_skips = {
+    #"aten.native_layer_norm_backward.default",
+    #"aten.embedding_dense_backward.default",   # This is hurting nvfuser's perf
+    #"aten.addmm.default"
+}
+
+for op, decomp_fn in decomposition_table.items():
+    print("decomp_fn.__module__: ", decomp_fn.__module__)
+    if "torch._refs" in decomp_fn.__module__:
+        aten2prim_decomp[op] = decomp_fn
+    else:
+        if str(op) not in aten2aten_decomp_skips:
+            aten2aten_decomp[op] = decomp_fn
+
+
+aten2prim_decomp[torch.ops.aten.to.dtype] = aten_to_dtype
+
 
 class OperatorSupport(OperatorSupport):
     """
@@ -30,6 +68,8 @@ class OperatorSupport(OperatorSupport):
         support_dict = {
             "_operator.getitem": None,
             "torch.ops.aten._adaptive_avg_pool2d.default": None,
+            "torch.ops.aten._fake_quantize_per_tensor_affine_cachemask_tensor_qparams.default": None,
+            #"torch.ops.aten._scaled_dot_product_flash_attention.default": None,
             "torch.ops.aten._softmax.default": None,
             "torch.ops.aten._to_copy.default": None,
             "torch.ops.aten._unsafe_view.default": None,
@@ -59,6 +99,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.eq.Tensor": None,
             "torch.ops.aten.exp.default": None,
             "torch.ops.aten.expand.default": None,
+            "torch.ops.aten.fake_quantize_per_channel_affine_cachemask.default" : None,
             "torch.ops.aten.full.default": None,
             "torch.ops.aten.gather.default": None,
             "torch.ops.aten.gelu.default": None,
@@ -84,6 +125,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.native_layer_norm.default": None,
             "torch.ops.aten.neg.default": None,
             "torch.ops.aten.new_ones.default": None,
+            "torch.ops.aten.ones.default": None,
             "torch.ops.aten.permute.default": None,
             "torch.ops.aten.pow.Tensor_Scalar": None,
             "torch.ops.aten.relu.default": None,

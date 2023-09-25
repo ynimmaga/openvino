@@ -10,7 +10,7 @@ from functools import partial
 from hashlib import sha256
 
 import torch
-from torch._dynamo.backends.common import fake_tensor_unsupported
+from torch._dynamo.backends.common import fake_tensor_unsupported, aot_autograd
 from torch._dynamo.backends.registry import register_backend
 from torch._inductor.compile_fx import compile_fx
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -51,6 +51,10 @@ def openvino(subgraph, example_inputs):
 @fake_tensor_unsupported
 def openvino_ts(subgraph, example_inputs):
     return ts_openvino(subgraph, example_inputs)
+
+aot_ovgraphs = aot_autograd(fw_compiler=openvino, bw_compiler=openvino)
+register_backend(name="aot_openvino", compiler_fn=aot_ovgraphs)
+
 
 def ts_openvino(subgraph, example_inputs):
     try:
@@ -132,10 +136,13 @@ def fx_openvino(subgraph, example_inputs):
                 return _call
         if inputs_reversed:
             example_inputs.reverse()
-        model = make_fx(subgraph)(*example_inputs)
+        partitioner = Partitioner()
+        model = partitioner.fx_serialize(subgraph, *example_inputs)
+
+        #model = make_fx(subgraph)(*example_inputs)
         with torch.no_grad():
             model.eval()
-        partitioner = Partitioner()
+        
         compiled_model = partitioner.make_partitions(model)
 
         if executor_parameters is not None and 'model_hash_str' in executor_parameters:

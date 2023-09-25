@@ -15,7 +15,7 @@ from torch.fx.experimental.proxy_tensor import DecompositionInterpreter
 from torch._decomp import decomposition_table
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.utils._pytree import tree_flatten, tree_map, tree_unflatten
-from openvino.frontend.pytorch.torchdynamo.op_support import OperatorSupport
+from openvino.frontend.pytorch.torchdynamo.op_support import OperatorSupport, aten2aten_decomp
 
 import typing as t
 import logging
@@ -30,7 +30,10 @@ class Partitioner:
 
     def fx_serialize(self, graph_module: GraphModule, *args, **kwargs):
         fx_gm = make_fx(graph_module)(*args)
-        return fx_gm
+        prim_graph = torch.fx.Graph()
+        DecompositionInterpreter(fx_gm, prim_graph, decomposition_table=aten2aten_decomp).run(*args, **kwargs)
+        prim_module = torch.fx.GraphModule(fx_gm, prim_graph)
+        return prim_module 
 
     def add_get_attr_inputs(self, partitions: t.List[Partition]):
         # TODO: Find a more efficient way to include input
@@ -56,10 +59,12 @@ class Partitioner:
         return False
 
     def make_partitions(self, graph_module: GraphModule) -> GraphModule:
+        print("graph_module: ", graph_module)
         partitioner = CapabilityBasedPartitioner(
             graph_module, self.supported_ops, allows_single_node_partition=False)
         partitions = partitioner.propose_partitions()
         self.add_get_attr_inputs(partitions)
         fused_graph_module = partitioner.fuse_partitions(partitions)
+        print("fused_graph_module: ", fused_graph_module)
 
         return fused_graph_module
