@@ -548,6 +548,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.add.Tensor", op::translate_add},
         {"aten.add_.Tensor", op::translate_add},
         {"aten.addmm.default", op::translate_addmm},
+        {"aten.all.default", op::translate_all},
         {"aten.arange.start", op::translate_arange_fx},
         {"aten.arange.default", op::translate_arange_fx},
         {"aten.argmax.default", op::translate_argmax},

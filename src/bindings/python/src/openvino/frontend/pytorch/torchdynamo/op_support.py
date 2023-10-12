@@ -37,6 +37,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.add.Tensor": None,
             "torch.ops.aten.add_.Tensor": None,
             "torch.ops.aten.addmm.default": None,
+            "torch.ops.aten.all.default": None,
             "torch.ops.aten.arange.start": None,
             "torch.ops.aten.arange.default": None,
             "torch.ops.aten.argmax.default": None,
