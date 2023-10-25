@@ -8,7 +8,6 @@ import logging
 import os
 from functools import partial
 from hashlib import sha256
-from typing import Optional, Any
 
 import torch
 from torch._dynamo.backends.common import fake_tensor_unsupported
@@ -21,7 +20,8 @@ from openvino.runtime import Core, Type, PartialShape
 from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
 from openvino.frontend.pytorch.torchdynamo.partition import Partitioner
 from openvino.frontend.pytorch.torchdynamo.execute import execute, execute_cached
-from openvino.frontend.pytorch.torchdynamo.compile import cached_model_name, cache_root_path, get_device, openvino_compile_cached_model
+from openvino.frontend.pytorch.torchdynamo.compile import cached_model_name, openvino_compile_cached_model
+from openvino.frontend.pytorch.torchdynamo.backend_utils import _get_cache_dir, _get_device
 
 from openvino.runtime import Core, Type, PartialShape
 
@@ -46,34 +46,16 @@ log = logging.getLogger(__name__)
 @register_backend
 @fake_tensor_unsupported
 def openvino(subgraph, example_inputs, options=None):
+    if options:
+        print("Yep")
+    else:
+        print("Nope")
     return fx_openvino(subgraph, example_inputs, options)
 
 @register_backend
 @fake_tensor_unsupported
 def openvino_ts(subgraph, example_inputs, options=None):
     return ts_openvino(subgraph, example_inputs, options)
-
-
-def _get_device_option(options) -> Optional[Any]:
-    if "device" in options:
-        return options["device"]
-    else:
-        return os.getenv("OPENVINO_TORCH_BACKEND_DEVICE")
-
-
-def _get_model_caching_option(options) -> Optional[Any]:
-    if "model_caching" in options:
-        return options["model_caching"]
-    else:
-        return os.getenv("OPENVINO_TORCH_MODEL_CACHING")
-
-
-def _get_cache_dir_option(options) -> Optional[Any]:
-    if "cache_dir" in options:
-        return options["cache_dir"]
-    else:
-        return os.getenv("OPENVINO_TORCH_CACHE_DIR", default="./cache/")
-
 
 def ts_openvino(subgraph, example_inputs, options):
     try:
@@ -137,23 +119,23 @@ def ts_openvino(subgraph, example_inputs, options):
 
 def fx_openvino(subgraph, example_inputs, options):
     try:
+        print("In fx backend")
         executor_parameters = None
         inputs_reversed = False
 
-        openvino_torch_cache_dir = _get_cache_dir_option(options)
-        openvino_torch_model_caching = _get_model_caching_option(options)
-        if openvino_torch_model_caching is not None:
+        openvino_torch_cache_dir = _get_cache_dir(options)
+        if openvino_torch_cache_dir is not None:
+            print("CACHE_DIR")
             # Create a hash to be used for caching
             model_hash_str = sha256(subgraph.code.encode('utf-8')).hexdigest()
             executor_parameters = {"model_hash_str": model_hash_str}
             # Check if the model was fully supported and already cached
             example_inputs.reverse()
             inputs_reversed = True
-            maybe_fs_cached_name = cached_model_name(model_hash_str + "_fs", get_device(), example_inputs, cache_root_path())
+            maybe_fs_cached_name = cached_model_name(model_hash_str + "_fs", _get_device(options), example_inputs, _get_cache_dir(options))
             if os.path.isfile(maybe_fs_cached_name + ".xml") and os.path.isfile(maybe_fs_cached_name + ".bin"):
                 # Model is fully supported and already cached. Run the cached OV model directly.
-                os.environ["OPENVINO_TORCH_CACHE_DIR"] = openvino_torch_cache_dir
-                compiled_model = openvino_compile_cached_model(maybe_fs_cached_name, *example_inputs)
+                compiled_model = openvino_compile_cached_model(maybe_fs_cached_name, *example_inputs, options)
                 def _call(*args):
                     res = execute_cached(compiled_model, *args)
                     return res
@@ -174,7 +156,7 @@ def fx_openvino(subgraph, example_inputs, options):
 
         def _call(*args):
             res = execute(compiled_model, *args, executor="openvino",
-                          executor_parameters=executor_parameters)
+                          executor_parameters=executor_parameters, options=options)
             return res
         return _call
     except Exception as e:
