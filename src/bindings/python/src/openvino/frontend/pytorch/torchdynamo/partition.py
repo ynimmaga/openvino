@@ -59,12 +59,10 @@ class Partitioner:
         return False
 
     def make_partitions(self, graph_module: GraphModule) -> GraphModule:
-        print("graph_module: ", graph_module)
         partitioner = CapabilityBasedPartitioner(
-            graph_module, self.supported_ops, allows_single_node_partition=False)
+            graph_module, self.supported_ops, allows_single_node_partition=True)
         partitions = partitioner.propose_partitions()
         self.add_get_attr_inputs(partitions)
         fused_graph_module = partitioner.fuse_partitions(partitions)
-        print("fused_graph_module: ", fused_graph_module)
 
         return fused_graph_module
