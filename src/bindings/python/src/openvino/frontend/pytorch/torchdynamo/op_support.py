@@ -48,7 +48,6 @@ aten2aten_decomp_skips = {
 }
 
 for op, decomp_fn in decomposition_table.items():
-    print("decomp_fn.__module__: ", decomp_fn.__module__)
     if "torch._refs" in decomp_fn.__module__:
         aten2prim_decomp[op] = decomp_fn
     else:

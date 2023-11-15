@@ -90,7 +90,6 @@ OutputVector translate_var_mean_fx(const NodeContext& context) {
     ov::Output<ov::Node> axes;
 
     axes = context.get_input(1);
-    auto axis_0 = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
     mean = context.mark_node(std::make_shared<v1::ReduceMean>(data, axes, true));
     t_mean = context.mark_node(std::make_shared<v1::ReduceMean>(data, axes, true));
     auto reduced_dims = context.mark_node(std::make_shared<v3::ShapeOf>(data, element::i32));
@@ -101,7 +100,6 @@ OutputVector translate_var_mean_fx(const NodeContext& context) {
     auto sub_v = context.mark_node(std::make_shared<v1::Subtract>(data, t_mean));
     auto sqr_sub = context.mark_node(std::make_shared<v1::Multiply>(sub_v, sub_v));
     auto var = context.mark_node(std::make_shared<v1::ReduceMean>(sqr_sub, axes, true));
-    auto axis_0 = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
     // if unbiased=true Bessel’s correction will be used
     // Correct bias in calculating variance, by dividing it over (N - 1) instead on N
     if (unbiased) {
