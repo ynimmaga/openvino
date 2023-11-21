@@ -106,6 +106,47 @@ OutputVector translate_pad(const NodeContext& context) {
     return {context.mark_node(std::make_shared<v1::Pad>(data, pads_begins, pads_ends, pad_value, ov_mode->second))};
 }
 
+OutputVector translate_pad_fx(const NodeContext& context) {
+    num_inputs_check(context, 3, 3);
+    auto data = context.get_input(0);
+    auto paddings = context.const_input<std::vector<int64_t>>(1);
+    std::string mode = "constant";
+    Output<Node> shape;
+    Output<Node> rank;
+    std::tie(shape, rank) = get_shape_rank(context, data);
+    auto zero = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
+    size_t pad_size_half = paddings.size() / 2;
+    std::vector<int64_t> pad_b(pad_size_half, 0);
+    std::vector<int64_t> pad_e(pad_size_half, 0);
+    for (size_t i = 0; i < pad_size_half; i++) {
+        pad_b[i] = paddings[paddings.size() - 2 - 2 * i];
+        pad_e[i] = paddings[paddings.size() - 1 - 2 * i];
+    }
+    auto pads_begin_short = context.mark_node(v0::Constant::create(element::i32, Shape{pad_size_half}, pad_b));
+    auto pads_end_short = context.mark_node(v0::Constant::create(element::i32, Shape{pad_size_half}, pad_e));
+    auto pads_short_len = context.mark_node(v0::Constant::create(element::i32, Shape{1}, {pad_size_half}));
+    auto pads_diff = context.mark_node(std::make_shared<v1::Subtract>(rank, pads_short_len));
+    auto pads_remaining = context.mark_node(std::make_shared<v3::Broadcast>(zero, pads_diff));
+    auto pads_begins = context.mark_node(std::make_shared<v0::Concat>(NodeVector{pads_remaining, pads_begin_short}, 0));
+    auto pads_ends = context.mark_node(std::make_shared<v0::Concat>(NodeVector{pads_remaining, pads_end_short}, 0));
+    auto pad_value = context.get_input(2);
+    const std::map<std::string, PadMode> pt_to_ov_pad{
+        {"constant", PadMode::CONSTANT},
+        {"reflect", PadMode::REFLECT},
+        {"replicate", PadMode::EDGE},
+    };
+
+    auto ov_mode = pt_to_ov_pad.find("constant");
+    
+    FRONT_END_OP_CONVERSION_CHECK(ov_mode != pt_to_ov_pad.end(),
+                                  "aten::pad conversion doesn't support [ ",
+                                  mode,
+                                  " ] padding mode");
+    return {context.mark_node(std::make_shared<v1::Pad>(data, pads_begins, pads_ends, pad_value, ov_mode->second))};
+}
+
+
+
 }  // namespace op
 }  // namespace pytorch
 }  // namespace frontend

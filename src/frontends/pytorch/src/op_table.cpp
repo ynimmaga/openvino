@@ -224,11 +224,13 @@ OP_CONVERTER(translate_group_norm_fx);
 OP_CONVERTER(translate_index_fx);
 OP_CONVERTER(translate_layer_norm_fx);
 OP_CONVERTER(translate_max_poolnd_fx);
+OP_CONVERTER(translate_pad_fx);
 OP_CONVERTER(translate_scaled_dot_product_attention_fx);
 OP_CONVERTER(translate_slice_fx);
 OP_CONVERTER(translate_softmax_fx);
+OP_CONVERTER(translate_stack_fx);
 OP_CONVERTER(translate_transpose_fx);
-
+OP_CONVERTER(translate_topk_fx);
 }  // namespace op
 
 // Supported ops for TorchScript
@@ -575,6 +577,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.arange.start", op::translate_arange_fx},
         {"aten.arange.default", op::translate_arange_fx},
         {"aten.argmax.default", op::translate_argmax},
+        {"aten.as_strided_.default", op::translate_as_strided},
         {"aten.avg_pool2d.default", op::translate_avg_poolnd},
         {"aten.baddbmm.default", op::translate_addmm},
         {"aten.bitwise_and.Tensor", op::translate_bitwise_and},
@@ -582,6 +585,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.cat.default", op::translate_cat_fx},
         {"aten.clamp_min.default", op::translate_1to1_match_2_inputs<opset10::Maximum>},
         {"aten.clone.default", op::skip_node},  // ignore clone operators that are inserted by PyTorch autograd
+        {"aten.constant_pad_nd.default", op::translate_pad_fx},
         {"aten.convolution.default", op::translate_convolution},
         {"aten.copy_.default", op::skip_node},
         {"aten.cos.default", op::translate_1to1_match_1_inputs<opset10::Cos>},
@@ -596,6 +600,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.exp.default", op::translate_1to1_match_1_inputs<opset10::Exp>},
         {"aten.expand.default", op::translate_expand_fx},
         {"aten.fake_quantize_per_channel_affine_cachemask.default", op::translate_fake_quantize_per_channel_affine_fx},
+        {"aten.floor_divide.default", op::translate_floor_divide},
         {"aten.full.default", op::translate_full},
         {"aten.gather.default", op::translate_gather},
         {"aten.gelu.default", op::translate_gelu},
@@ -629,6 +634,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.pow.Tensor_Scalar", op::translate_pow},
         {"aten.relu.default", op::translate_1to1_match_1_inputs<opset10::Relu>},
         {"aten.relu_.default", op::inplace_op<op::translate_1to1_match_1_inputs<opset10::Relu>>},
+        {"aten.remainder.Scalar", op::translate_remainder},
         {"aten.rsub.Scalar", op::translate_rsub},
         {"aten._scaled_dot_product_flash_attention.default", op::translate_scaled_dot_product_attention_fx},
         {"aten.select.int", op::translate_select},
@@ -638,10 +644,14 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.sin.default", op::translate_1to1_match_1_inputs<opset10::Sin>},
         {"aten.slice.Tensor", op::translate_slice_fx},
         {"aten.split.Tensor", op::translate_chunk_fx},
+        {"aten.stack.default", op::translate_stack_fx},
         {"aten.sub.default", op::translate_sub},
         {"aten.sub.Tensor", op::translate_sub},
+        {"aten.sum.default", op::translate_sum},
+        {"aten.sum.dim_IntList", op::translate_sum},
         {"aten.t.default", op::translate_t},
         {"aten.tanh.default", op::translate_1to1_match_1_inputs<opset10::Tanh>},
+        {"aten.topk.default", op::translate_topk_fx},
         {"aten.transpose.int", op::translate_transpose},
         {"aten.unsqueeze.default", op::translate_1to1_match_2_inputs<opset10::Unsqueeze>},
         {"aten.upsample_nearest2d.default", op::translate_upsample_nearest2d},

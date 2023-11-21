@@ -6,6 +6,7 @@
 
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/util/framework_node.hpp"
 #include "utils.hpp"
 
 namespace ov {
@@ -40,6 +41,46 @@ OutputVector translate_topk(const NodeContext& context) {
 
     return {topk->output(0), indices};
 };
+
+
+OutputVector translate_topk_fx(const NodeContext& context) {
+    num_inputs_check(context, 3, 5);
+    const auto input_tensor = context.get_input(0);
+    bool largest{true};
+    bool sorted{true};
+    //const auto sorted = true;
+    auto k = context.get_input(1);
+    int64_t axis{-1};
+    auto mode = TopKMode::MIN;
+    auto sort = TopKSortType::NONE;
+
+    if (!context.input_is_none(2)) {
+        axis = context.const_input<int64_t>(2);
+    }
+    if (!context.input_is_none(3)) {
+        largest = context.const_input<bool>(3);
+    }
+    if (!context.input_is_none(4)) {
+        sorted = context.const_input<bool>(4);
+    }
+    if (largest) {
+        mode = TopKMode::MAX;
+    }
+    if (sorted) {
+        sort = TopKSortType::SORT_VALUES;
+    }
+
+    auto topk = context.mark_node(std::make_shared<v3::TopK>(input_tensor, k, axis, mode, sort));
+    auto indices = context.mark_node(std::make_shared<v0::Convert>(topk->output(1), element::i64));
+ 
+    ov::OutputVector out_vec;
+
+    out_vec.push_back(topk->output(0));
+    out_vec.push_back(indices);
+    return {context.mark_node(make_list_construct(out_vec))};
+
+};
+
 
 }  // namespace op
 }  // namespace pytorch
