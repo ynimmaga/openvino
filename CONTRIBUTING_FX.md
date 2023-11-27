@@ -104,7 +104,7 @@ export PYTORCH_TRACING_MODE=TORCHFX
    // Example for translate_transpose_fx
    OP_CONVERTER(translate_transpose_fx);
    ```
- - Finally, add  the newly added op in the `get_supported_ops_fx()` in [op_table.cpp] (https://github.com/openvinotoolkit/openvino/blob/master/src/frontends/pytorch/src/op_table.cpp) as mentioned in Step 2.2.
+ - Finally, add  the newly added op in the `get_supported_ops_fx()` in [op_table.cpp](https://github.com/openvinotoolkit/openvino/blob/master/src/frontends/pytorch/src/op_table.cpp) as mentioned in Step 2.2.
 
 ## Step 3: Add Op Support to op_support.py
 
