@@ -55,12 +55,14 @@ OutputVector translate_batch_norm_common(const NodeContext& context, bool traini
     Output<Node> current_var;
     if (!context.input_is_none(1)) {
         weight = context.get_input(1);
+        weight = broadcast_const_to_channel_dim(context, input, weight);
     } else {
         auto one_f = context.mark_node(v0::Constant::create(element::f32, Shape{}, {1}));
         weight = broadcast_const_to_channel_dim(context, input, one_f);
     }
     if (!context.input_is_none(2)) {
         bias = context.get_input(2);
+        bias = broadcast_const_to_channel_dim(context, input, bias);
     } else {
         auto zero_f = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
         bias = broadcast_const_to_channel_dim(context, input, zero_f);
