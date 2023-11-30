@@ -74,10 +74,6 @@ cmake .. \
 
 ### 1.4. Run the application
 Run the model with `torch.compile(model, backend="openvino")`, now with the debug statements, Identify Unsupported Operations.
-```bash
-#To run with TorchFX backend, use env variable PYTORCH_TRACING_MODE
-export PYTORCH_TRACING_MODE=TORCHFX
-```
 
 ## Step 2: Modify op_table.cpp
 
@@ -87,15 +83,15 @@ export PYTORCH_TRACING_MODE=TORCHFX
    - `get_supported_ops_ts()` (returns supported ops for TorchScript)
    - `get_supported_ops_fx()` (returns supported ops for TorchFX)
 
--- If the unsupported op is available `get_supported_ops_ts()`, add it to `get_supported_ops_fx()`.
-
-   Example:
-   ```cpp
-   // Inside get_supported_ops_fx()
-   {"aten.bitwise_not.default", op::translate_bitwise_not}
-   ```
-
--- If the unsupported operation is not present in `get_supported_ops_ts()`, proceed to Step 2.3 to implement its support.
+The process for adding support for unsupported operations is as follows:
+1. Check if the unsupported op is already supported in TorchScript by looking into `get_supported_ops_ts()` function
+2. The table below summarizes what action should be taken depending on whether it requires additional TorchFX specific handling or is completely missing
+   
+| Unsupported Op Status | Action |
+|-|-|
+| Present in get_supported_ops_ts() with correct implementation | Add to `get_supported_ops_fx()` <br> Example: <br>`{"aten.bitwise_not.default", op::translate_bitwise_not} ` |
+| Present in get_supported_ops_ts() but implementation not suitable for TorchFX | Proceed to Step 2.3 to implement TorchFX support | 
+| Not present in get_supported_ops_ts() | Proceed to Step 2.3 to implement support |
 
 ### 2.3. Implement Unsupported Op Support
 - If the unsupported op is not in `get_supported_ops_ts()`, implement its functionality in the appropriate file or create a new file in the [`op` directory](https://github.com/openvinotoolkit/openvino/tree/master/src/frontends/pytorch/src/op/).
