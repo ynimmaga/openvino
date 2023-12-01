@@ -17,7 +17,8 @@ from torch._inductor.compile_fx import compile_fx
 from torch.fx.experimental.proxy_tensor import make_fx
 from functorch.compile import min_cut_rematerialization_partition, nop
 from torch.fx.experimental.proxy_tensor import DecompositionInterpreter
-from torch._decomp import decomposition_table
+from torch._decomp import decomposition_table, register_decomposition
+from torch._decomp.decompositions import aten, pw_cast_for_opmath
 
 from openvino.frontend import FrontEndManager
 from openvino.runtime import Core, Type, PartialShape
@@ -63,6 +64,42 @@ def openvino_bw(subgraph, example_inputs):
 
 aot_eager = aot_autograd(fw_compiler=nop)
 #register_backend(name="aot_eager", compiler_fn=aot_eager)
+
+@register_decomposition(aten.convolution_backward)
+@pw_cast_for_opmath
+def convolution_backward(
+    grad_output,
+    input,
+    weight,
+    bias,
+    stride,
+    padding,
+    dilation,
+    transposed,
+    output_padding,
+    groups,
+    output_mask,
+):
+
+    # Compute the gradient of the input tensor
+    grad_input = torch.nn.functional.conv_transpose2d(
+        grad_output, weight, stride=stride, padding=padding, dilation=dilation, groups=groups
+    )
+
+    # Compute the gradient of the weight tensor
+    grad_weight = torch.nn.functional.conv_transpose2d(
+        #input, weight.transpose(0,1), stride=stride, padding=padding, dilation=dilation, groups=groups
+        input, weight.transpose(0,1), stride=stride, padding=padding, dilation=dilation, groups=groups
+    )
+
+    # Compute the gradient of the bias tensor
+    if bias is not None:
+        grad_bias = grad_output.sum([0, 2, 3], keepdim=True)
+    else:
+        grad_bias = None
+
+    return grad_input, grad_weight, grad_bias
+
 
 aot_ovgraphs = aot_autograd(fw_compiler=openvino, bw_compiler=openvino_bw)
 register_backend(name="aot_openvino", compiler_fn=aot_ovgraphs)
