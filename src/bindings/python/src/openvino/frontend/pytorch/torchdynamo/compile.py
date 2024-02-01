@@ -74,10 +74,18 @@ def openvino_compile_cached_model(cached_model_path, options, *example_inputs):
 
     return compiled_model
 
+compile_num = 0
+
 def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options=None):
     core = Core()
 
+    global compile_num
+    compile_num = compile_num + 1
+
     device = _get_device(options)
+    if (device == "GPU" and compile_num > 10):
+        device = "CPU"
+
     cache_root = _get_cache_dir(options)
     file_name = cached_model_name(model_hash_str, device, args, cache_root)
 

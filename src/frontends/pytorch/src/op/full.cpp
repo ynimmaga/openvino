@@ -249,6 +249,23 @@ OutputVector translate_empty_like(const NodeContext& context) {
     return {empty};
 };
 
+OutputVector translate_empty_like_fx(const NodeContext& context) {
+    // aten::empty(SymInt[] size, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool?
+    // pin_memory=None, MemoryFormat? memory_format=None) -> Tensor layout, device and work with memory ignored on our
+    // side, so just skip these parameters
+    num_inputs_check(context, 1, 6);
+    auto input = context.get_input(0);
+    auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
+    auto sizes = context.mark_node(std::make_shared<v3::ShapeOf>(input, element::i32));
+
+    if (context.get_input_size() == 6 && !context.input_is_none(1)) {
+        return {base_translate_full_with_convert(context, sizes, value, 1)};
+    }
+    auto out = context.input_is_none(2) ? input : context.get_input(2);
+    return {base_translate_full_with_convertlike(context, sizes, value, out)};
+};
+
+
 OutputVector translate_fill_diagonal(const NodeContext& context) {
     // aten::fill_diagonal_(Tensor(a!) self, Scalar fill_value, bool wrap=False) -> Tensor(a!)
     // realization inspired by numpy:

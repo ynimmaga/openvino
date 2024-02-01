@@ -10,7 +10,9 @@ from functools import partial
 from hashlib import sha256
 
 import torch
-from torch._dynamo.backends.common import fake_tensor_unsupported
+from torch._decomp import decomposition_table, get_decompositions, register_decomposition
+from torch._decomp.decompositions import aten, pw_cast_for_opmath
+from torch._dynamo.backends.common import fake_tensor_unsupported, aot_autograd
 from torch._dynamo.backends.registry import register_backend
 from torch._inductor.compile_fx import compile_fx
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -111,6 +113,101 @@ def ts_openvino(subgraph, example_inputs):
         log.debug(f"Failed in compilation: {e}")
         return compile_fx(subgraph, example_inputs)
 
+@register_decomposition(aten.convolution_backward)
+@pw_cast_for_opmath
+def convolution_backward(
+    grad_output,
+    input,
+    weight,
+    bias,
+    stride,
+    padding,
+    dilation,
+    transposed,
+    output_padding,
+    groups,
+    output_mask,
+):
+
+    if (stride == [2,2]):
+        output_padding = [1,1]
+
+    # Compute the gradient of the input tensor
+    grad_input = torch.nn.functional.conv_transpose2d(
+        grad_output, weight, stride=stride, padding=padding, dilation=dilation, groups=groups, output_padding=output_padding
+    )
+
+    # Compute the gradient of the weight tensor
+    grad_weight = torch.nn.functional.conv_transpose2d(
+        #input, weight.transpose(0,1), stride=stride, padding=padding, dilation=dilation, groups=groups
+        input, weight.transpose(0,1), stride=stride, padding=padding, dilation=dilation, groups=groups, output_padding=output_padding
+    )
+
+    # Compute the gradient of the bias tensor
+    if bias is not None:
+        grad_bias = grad_output.sum([0, 2, 3], keepdim=True)
+    else:
+        grad_bias = None
+
+    return grad_input, grad_weight, grad_bias
+
+
+@register_decomposition(aten._scaled_dot_product_flash_attention.default)
+def scaled_dot_product_flash_attention(
+    query,
+    key,
+    value,
+    dropout_p = 0.0,
+    is_causal = False,
+    *,
+    return_debug_mask = False,
+    scale = None,
+):
+    dtype = query.dtype
+    batchSize, num_head, qSize, headSize = (
+        query.shape[0],
+        query.shape[1],
+        query.shape[2],
+        query.shape[3],
+    )
+
+    logsumexp = torch.empty([batchSize, qSize, num_head, headSize], dtype=torch.float)
+    cum_seq_q, cum_seq_k = torch.empty([], dtype=torch.long), torch.empty(
+        [], dtype=torch.long
+    )
+    max_q, max_k = 0, 0
+    philox_seed, philox_offset = torch.empty([], dtype=torch.long), torch.empty(
+        [], dtype=torch.long
+    )
+    debug_attn_mask = torch.empty(
+        [],
+        dtype=query.dtype,
+        device=query.device,
+        requires_grad=query.requires_grad,
+    )
+    output, _ = aten._scaled_dot_product_attention_math.default(
+        query, key, value, None, dropout_p, is_causal, None, scale=scale
+    )
+
+    scores = torch.matmul(query, key.transpose(-2,-1))/ (key.size(-1) ** 0.5)
+    logsumexp = torch.logsumexp(scores, dim=-1)
+
+    output = output.transpose(1, 2).contiguous(memory_format=torch.contiguous_format)
+    return (
+        output.transpose(1, 2),
+        logsumexp,
+        cum_seq_q,
+        cum_seq_k,
+        max_q,
+        max_k,
+        philox_seed,
+        philox_offset,
+        debug_attn_mask,
+    )
+
+
+aot_ovgraphs = aot_autograd(fw_compiler=openvino, bw_compiler=openvino)
+register_backend(name="aot_openvino", compiler_fn=aot_ovgraphs)
 
 def fx_openvino(subgraph, example_inputs, options):
     try:
@@ -134,7 +231,18 @@ def fx_openvino(subgraph, example_inputs, options):
                 return _call
         if inputs_reversed:
             example_inputs.reverse()
-        model = make_fx(subgraph)(*example_inputs)
+        model = make_fx(subgraph,
+                        decomposition_table=get_decompositions([torch.ops.aten.convolution_backward.default,
+                                                                torch.ops.aten.gelu_backward.default,
+                                                                torch.ops.aten.native_group_norm_backward.default,
+                                                                torch.ops.aten.native_layer_norm_backward.default,
+                                                                torch.ops.aten._softmax_backward_data.default,
+                                                                torch.ops.aten._scaled_dot_product_flash_attention.default,
+                                                                torch.ops.aten.slice_backward.default,
+                                                                torch.ops.aten._softmax.default,
+                                                                torch.ops.aten.native_group_norm.default,
+                                                                torch.ops.aten.native_layer_norm.default
+                                                               ]))(*example_inputs)
         with torch.no_grad():
             model.eval()
         partitioner = Partitioner()
