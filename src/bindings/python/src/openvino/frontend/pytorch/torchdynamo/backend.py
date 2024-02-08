@@ -118,7 +118,7 @@ def fx_openvino(subgraph, example_inputs, options):
     try:
         global subgraph_num
         subgraph_num = subgraph_num + 1
-        if (subgraph_num == 14):
+        if (subgraph_num == 12):
             return subgraph
         executor_parameters = None
         inputs_reversed = False
