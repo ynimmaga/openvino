@@ -106,6 +106,12 @@ OutputVector translate_std(const NodeContext& context) {
     return {context.mark_node(std::make_shared<v0::Sqrt>(var))};
 }
 
+OutputVector translate_std_fx(const NodeContext& context) {
+    auto res = translate_var_mean_fx(context);
+    auto var = res[0];
+    return {context.mark_node(std::make_shared<v0::Sqrt>(var))};
+}
+
 OutputVector translate_std_mean(const NodeContext& context) {
     auto res = translate_var_mean(context);
     auto var = res[0];

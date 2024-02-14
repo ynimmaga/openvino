@@ -123,7 +123,7 @@ OutputVector translate_new_full(const NodeContext& context) {
 };
 
 OutputVector translate_zeros(const NodeContext& context) {
-    num_inputs_check(context, 2, 5);
+    num_inputs_check(context, 1, 5);
     auto sizes = context.get_input(0);
     auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
     auto num_inputs = context.get_input_size();
