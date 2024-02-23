@@ -103,7 +103,7 @@ class TorchFXPythonDecoder (Decoder):
                 []), [arg])  # TODO: f32? why not f64?
         return None
 
-    
+
     def inlined_input(self, index):
         assert index < len(self._inputs), "Requested input doesn't exist"
         assert isinstance(self._inputs[index], tuple), "Requested input which is not inlined"
@@ -293,6 +293,7 @@ class TorchFXPythonDecoder (Decoder):
         if self.pt_module.op == 'get_attr':
             # Extract Constant from FX module field
             ret = fetch_attr(self.fx_gm, self.pt_module.target)
+            ret = ret.contiguous()
             ov_const = op.Constant(ret.numpy(force=True), shared_memory=True)
             return ov_const.outputs()
 
