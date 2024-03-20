@@ -119,8 +119,14 @@ def ts_openvino(subgraph, example_inputs):
         log.debug(f"Failed in compilation: {e}")
         return compile_fx(subgraph, example_inputs)
 
+graph_num = 0
 def fx_openvino(subgraph, example_inputs, options=None):
     try:
+        global graph_num
+        graph_num = graph_num + 1
+        print("graph_num: ", graph_num)
+        if (graph_num > 1):
+            return subgraph
         if len(openvino_options) != 0:
             options = openvino_options
         executor_parameters = None
