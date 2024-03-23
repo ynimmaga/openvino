@@ -121,7 +121,7 @@ def ts_openvino(subgraph, example_inputs):
 
 graph_num = 0
 def fx_openvino(subgraph, example_inputs, options=None):
-    try:
+    #try:
         global graph_num
         graph_num = graph_num + 1
         print("graph_num: ", graph_num)
@@ -173,9 +173,9 @@ def fx_openvino(subgraph, example_inputs, options=None):
                           executor_parameters=executor_parameters, options=options)
             return res
         return _call
-    except Exception as e:
-        log.debug(f"Failed in OpenVINO execution: {e}")
-        return compile_fx(subgraph, example_inputs)
+    #except Exception as e:
+        #log.debug(f"Failed in OpenVINO execution: {e}")
+        #return compile_fx(subgraph, example_inputs)
 
 def reset():
     clear_caches()
