@@ -741,6 +741,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten._softmax.default", op::translate_softmax_fx},
         {"aten._to_copy.default", op::translate_to_fx},
         {"aten._unsafe_view.default", op::translate_reshape},
+        {"aten._unsafe_index.Tensor", op::translate_index_fx},
         {"aten.abs.default", op::translate_1to1_match_1_inputs<opset10::Abs>},
         {"aten.acos.default", op::translate_1to1_match_1_inputs_with_fp32_type_alignment<opset10::Acos>},
         {"aten.acosh.default", op::translate_1to1_match_1_inputs_with_fp32_type_alignment<opset10::Acosh>},

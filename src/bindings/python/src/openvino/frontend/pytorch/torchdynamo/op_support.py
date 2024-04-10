@@ -46,6 +46,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten._softmax.default": None,
             "torch.ops.aten._to_copy.default": None,
             "torch.ops.aten._unsafe_view.default": None,
+            "torch.ops.aten._unsafe_index.Tensor": None,
             "torch.ops.aten.abs.default": None,
             "torch.ops.aten.acos.default": None,
             "torch.ops.aten.acosh.default": None,
