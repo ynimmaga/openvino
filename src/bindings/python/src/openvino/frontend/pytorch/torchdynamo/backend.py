@@ -82,12 +82,14 @@ def fx_openvino(subgraph, example_inputs, options=None):
         if inputs_reversed:
             example_inputs.reverse()
 
-        from torch._subclasses.fake_tensor import FakeTensorMode
-        decompositions = _get_decompositions(options) + get_inf_decomposition_list()
-        if (_get_aot_autograd(options)):
-            decompositions = decompositions + get_aot_decomposition_list()
-        with FakeTensorMode(allow_non_fake_inputs=True):
-            model = make_fx(subgraph, decomposition_table=get_decompositions(decompositions))(*example_inputs)
+        # from torch._subclasses.fake_tensor import FakeTensorMode
+        # decompositions = _get_decompositions(options) + get_inf_decomposition_list()
+        # if (_get_aot_autograd(options)):
+        #     decompositions = decompositions + get_aot_decomposition_list()
+        # with FakeTensorMode(allow_non_fake_inputs=True):
+        #     model = make_fx(subgraph, decomposition_table=get_decompositions(decompositions))(*example_inputs)
+
+        model = subgraph
 
         with torch.no_grad():
             model.eval()
