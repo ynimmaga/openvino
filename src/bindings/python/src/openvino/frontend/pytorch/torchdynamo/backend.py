@@ -57,8 +57,14 @@ def openvino(subgraph, example_inputs, options=None):
         return aot_autograd(fw_compiler=fx_openvino, bw_compiler=fx_openvino)(subgraph, example_inputs)
     return fx_openvino(subgraph, example_inputs, options)
 
+num = 0
 def fx_openvino(subgraph, example_inputs, options=None):
     try:
+        global num
+        num = num + 1
+        print("num: ", num)
+        if (num >= 5):
+            return subgraph
         if len(openvino_options) != 0:
             options = openvino_options
         executor_parameters = None

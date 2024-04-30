@@ -113,4 +113,6 @@ def get_aot_decomposition_list():
              torch.ops.aten.slice_backward.default])
 
 def get_inf_decomposition_list():
-    return ([torch.ops.aten.nll_loss_forward.default])
+    return ([torch.ops.aten.nll_loss_forward.default,
+             torch.ops.aten.nll_loss2d_forward.default,
+             torch.ops.aten._native_batch_norm_legit_functional.default])
