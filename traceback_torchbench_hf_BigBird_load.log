@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "/home/suryasid/Desktop/projects/openvino/validation_pipelines/torch_compile_local/pnp/scripts/common_torch.py", line 376, in load
+    try: model_cls = load_model_by_name(self.topology)("eval", "cpu", jit=False)
+                     ^^^^^^^^^^^^^^^^^^
+NameError: name 'load_model_by_name' is not defined
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/suryasid/Desktop/projects/openvino/validation_pipelines/torch_compile_local/pnp/scripts/common_torch.py", line 221, in wrapper
+    func(self, *args, **kwargs)
+  File "/home/suryasid/Desktop/projects/openvino/validation_pipelines/torch_compile_local/pnp/scripts/common_torch.py", line 259, in load_model
+    self.load()
+  File "/home/suryasid/Desktop/projects/openvino/validation_pipelines/torch_compile_local/pnp/scripts/common_torch.py", line 377, in load
+    except: model_cls = load_model_by_name(self.topology)("eval", "cpu")
+                        ^^^^^^^^^^^^^^^^^^
+NameError: name 'load_model_by_name' is not defined

@@ -1,0 +1,424 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.13, pytest-7.4.4, pluggy-1.5.0
+rootdir: /home/suryasid/Desktop/projects/openvino/openvino/tests/layer_tests
+configfile: pytest.ini
+plugins: typeguard-2.13.3
+collected 159 items
+
+tests/layer_tests/pytorch_tests/test_arange.py sssssssssssssssssssssAccuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.Accuracy validation successful!
+
+absolute eps: 0.0001, relative eps: 0.0001
+.
+
+======================= 138 passed, 21 skipped in 1.86s ========================

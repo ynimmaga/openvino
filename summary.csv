@@ -1,0 +1,7 @@
+name,source,compiler,device,load status,transform status,infer status,load comment,transform comment,infer comment,requests,transformation [ms],first inference [ms],average inference [ms],average throughput [fps],total time [ms]
+hf_BigBird,torchbench,compile openvino,CPU,FAILED,SKIPPED,SKIPPED,NameError: name 'load_model_by_name' is not defined,,,100,,,,,
+alexnet,torchvision,compile openvino,CPU,SUCCESS,SUCCESS,SUCCESS,,,,100,0.01,5408.62,6.43,155.48,643.15
+alexnet,torchvision,compile openvino,CPU,SUCCESS,SUCCESS,SUCCESS,,,,100,0.01,7320.65,6.82,146.66,681.86
+alexnet,torchvision,compile openvino,CPU,SUCCESS,SUCCESS,SUCCESS,,,,100,0.01,3507.65,6.35,157.50,634.91
+alexnet,torchvision,compile openvino,CPU,SUCCESS,FAILED,SKIPPED,,"torch._dynamo.exc.InvalidBackend: Invalid backend: 'openvino', see `torch._dynamo.list_backends()` for available backends.",,100,0.08,,,,
+alexnet,torchvision,compile openvino,CPU,SUCCESS,SUCCESS,SUCCESS,,,,100,0.02,946.35,6.75,148.24,674.60
