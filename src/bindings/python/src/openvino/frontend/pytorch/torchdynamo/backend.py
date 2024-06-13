@@ -56,13 +56,17 @@ def openvino(subgraph, example_inputs, options=None):
         openvino_options = options
         decompositions = _get_decompositions(options) + get_inf_decomposition_list()
         decompositions = decompositions + get_aot_decomposition_list()
-        return aot_autograd(fw_compiler=fx_openvino, 
-                            bw_compiler=fx_openvino, 
+        return aot_autograd(fw_compiler=fx_openvino,
+                            bw_compiler=fx_openvino,
                             decompositions=get_decompositions(decompositions))(subgraph, example_inputs)
     return fx_openvino(subgraph, example_inputs, options)
 
+sg_num = 0
 def fx_openvino(subgraph, example_inputs, options=None):
     try:
+        global sg_num
+        sg_num += 1
+        print(f"In FX Backend, subgraph num: {sg_num}")
         if len(openvino_options) != 0:
             options = openvino_options
         executor_parameters = None

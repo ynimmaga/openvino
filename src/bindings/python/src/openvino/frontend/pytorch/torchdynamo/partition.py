@@ -107,6 +107,7 @@ class Partitioner:
                 self.supported_ops.enable_by_name(unsqueeze_1_node)
 
     def make_partitions(self, graph_module: GraphModule, options) -> GraphModule:
+        print(f"Before partition {graph_module}")
         allow_single_node_partition = _is_testing(options)
         self.capture_gptq_patterns(graph_module)
         partitioner = CapabilityBasedPartitioner(
@@ -114,5 +115,6 @@ class Partitioner:
         partitions = partitioner.propose_partitions()
         self.add_get_attr_inputs(partitions)
         fused_graph_module = partitioner.fuse_partitions(partitions)
+        print(f"After partition {fused_graph_module}")
 
         return fused_graph_module
