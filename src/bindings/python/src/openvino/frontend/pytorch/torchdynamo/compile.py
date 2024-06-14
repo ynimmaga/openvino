@@ -107,6 +107,8 @@ def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options
 
         om = fe.convert(im)
 
+        print("Convert success")
+
         if file_name is not None:
             serialize(om, file_name + ".xml", file_name + ".bin")
 
@@ -138,4 +140,5 @@ def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options
             config["CACHE_DIR"] = cache_root
 
     compiled = core.compile_model(om, device, config)
+    print("Compile success")
     return compiled
