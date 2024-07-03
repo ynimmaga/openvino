@@ -53,9 +53,9 @@ def execute(
     options: Optional[Any] = None,
 ):
     if executor == "openvino":
-        return openvino_execute_partitioned(gm, *args, executor_parameters=executor_parameters, options=options)
+        return openvino_execute_partitioned(gm, args, executor_parameters=executor_parameters, options=options)
     elif executor == "strictly_openvino":
-        return openvino_execute(gm, *args, executor_parameters=executor_parameters)
+        return openvino_execute(gm, args, executor_parameters=executor_parameters)
 
     msg = "Received unexpected value for 'executor': {0}. Allowed values are: openvino, strictly_openvino.".format(executor)
     raise ValueError(msg)
@@ -72,7 +72,7 @@ def execute_cached(compiled_model, *args):
     return result
 
 
-def openvino_execute(gm: GraphModule, *args, executor_parameters=None, partition_id, options):
+def openvino_execute(gm: GraphModule, args, partition_id, options, executor_parameters=None):
 
     executor_parameters = executor_parameters or DEFAULT_OPENVINO_PYTHON_CONFIG
 
@@ -94,14 +94,14 @@ def openvino_execute(gm: GraphModule, *args, executor_parameters=None, partition
         compiled = compiled_cache[partition_id]
         req = req_cache[partition_id]
     else:
-        compiled = openvino_compile(gm, *args, model_hash_str=model_hash_str, options=options)
+        compiled = openvino_compile(gm, args, model_hash_str=model_hash_str, options=options)
         compiled_cache[partition_id] = compiled
         req = compiled.create_infer_request()
         req_cache[partition_id] = req
 
-    flat_args, _ = tree_flatten(args)
+    #flat_args, _ = tree_flatten(args)
     ov_inputs = []
-    for arg in flat_args:
+    for arg in args:
         ov_inputs.append((arg if isinstance(arg, int) else arg.detach().cpu().numpy()))
 
     res = req.infer(ov_inputs, share_inputs=True, share_outputs=True)
@@ -156,7 +156,7 @@ def partition_graph(gm: GraphModule, use_python_fusion_cache: bool, model_hash_s
     return gm
 
 
-def openvino_execute_partitioned(gm: GraphModule, *args, executor_parameters=None, options=None):
+def openvino_execute_partitioned(gm: GraphModule, args, executor_parameters=None, options=None):
     executor_parameters = executor_parameters or DEFAULT_OPENVINO_PYTHON_CONFIG
 
     global partitioned_modules
@@ -178,7 +178,7 @@ def openvino_execute_partitioned(gm: GraphModule, *args, executor_parameters=Non
     if signature not in partitioned_modules:
         partitioned_modules[signature] = partition_graph(gm, use_python_fusion_cache=use_python_fusion_cache,
                                                          model_hash_str=model_hash_str, options=options)
-    return partitioned_modules[signature](*args)
+    return partitioned_modules[signature](args)
 
 
 def clear_caches():

@@ -78,7 +78,7 @@ def openvino_compile_cached_model(cached_model_path, options, *example_inputs):
 
     return compiled_model
 
-def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options=None):
+def openvino_compile(gm: GraphModule, args, model_hash_str: str = None, options=None):
     core = Core()
 
     device = _get_device(options)
