@@ -182,6 +182,7 @@ class OperatorSupport(OperatorSupport):
             "torch.ops.aten.mul.Scalar": None,
             "torch.ops.aten.mul.Tensor": None,
             "torch.ops.aten.mul_.Tensor": None,
+            "torch.ops.aten.mv.default": None,
             "torch.ops.aten.native_batch_norm.default": None,
             "torch.ops.aten.native_dropout.default": None,
             "torch.ops.aten.native_group_norm.default": None,

@@ -905,6 +905,7 @@ const std::map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.mul.Scalar", op::translate_mul},
         {"aten.mul.Tensor", op::translate_mul},
         {"aten.mul_.Tensor", op::translate_mul},
+        {"aten.mv.default", op::translate_dot},
         {"aten.native_batch_norm.default", op::translate_batch_norm_legit_fx},
         {"aten.native_dropout.default", op::skip_node},
         {"aten.native_group_norm.default", op::translate_group_norm_fx},
