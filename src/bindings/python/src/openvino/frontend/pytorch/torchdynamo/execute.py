@@ -47,7 +47,7 @@ partitioned_modules = {}
 
 def execute(
     gm: GraphModule,
-    *args,
+    args,
     executor: str = "openvino",
     executor_parameters: Optional[dict] = None,
     options: Optional[Any] = None,
@@ -122,16 +122,16 @@ class OpenVINOGraphModule(torch.nn.Module):
         self.perm_fallback = False
         self.options = options
 
-    def __call__(self, *args):
+    def __call__(self, args):
         if self.perm_fallback:
-            return self.gm(*args)
+            return self.gm(args)
 
         try:
-            result = openvino_execute(self.gm, *args, executor_parameters=self.executor_parameters, partition_id=self.partition_id, options=self.options)
+            result = openvino_execute(self.gm, args, executor_parameters=self.executor_parameters, partition_id=self.partition_id, options=self.options)
         except Exception:
             logger.debug("OpenVINO execution failed. Falling back to native PyTorch execution.")
             self.perm_fallback = True
-            return self.gm(*args)
+            return self.gm(args)
 
         return result
 
