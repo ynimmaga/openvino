@@ -365,7 +365,7 @@ OutputVector translate_empty_like(const NodeContext& context) {
             context.mutate_input(3, empty);
         }
     } else {
-        FRONT_END_GENERAL_CHECK(false, "Unexpected number of inputs.");
+        empty = base_translate_full_with_convertlike(context, sizes, value, input);
     }
     return {empty};
 };

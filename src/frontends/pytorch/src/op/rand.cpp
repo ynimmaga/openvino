@@ -107,7 +107,7 @@ OutputVector translate_rand_like(const NodeContext& context) {
     // aten::rand_like(Tensor self, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool?
     // pin_memory=None, MemoryFormat? memory_format=None) -> Tensor aten::rand_like.out(Tensor self, *,
     // MemoryFormat? memory_format=None, Tensor(a!) out) -> Tensor(a!)
-    num_inputs_check(context, 3, 6);
+    num_inputs_check(context, 1, 6);
     auto inp_tensor = context.get_input(0);
     auto sizes = context.mark_node(std::make_shared<v3::ShapeOf>(inp_tensor, element::i32));
     auto low = context.mark_node(v0::Constant::create(element::f32, Shape{1}, {0}));

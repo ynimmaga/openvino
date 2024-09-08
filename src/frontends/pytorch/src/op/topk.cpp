@@ -5,7 +5,9 @@
 #include "openvino/op/topk.hpp"
 
 #include "openvino/frontend/pytorch/node_context.hpp"
+#include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/squeeze.hpp"
 #include "utils.hpp"
 
 namespace ov {
@@ -50,6 +52,16 @@ OutputVector translate_topk_fx(const NodeContext& context) {
     bool sorted = true;
     auto mode = TopKMode::MIN;
     auto sort = TopKSortType::NONE;
+    auto input_squeeze = [&context](ov::Output<Node> input) {
+        if (input.get_partial_shape().rank().is_dynamic() ||
+            (input.get_partial_shape().rank().is_static() && input.get_partial_shape().rank().get_length() == 1)) {
+            auto zero = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
+            input = context.mark_node(std::make_shared<ov::op::v0::Squeeze>(input, zero));
+        }
+        return input;
+    };
+    k = input_squeeze(k);
+
 
     if (!context.input_is_none(2)) {
         axis = context.const_input<int64_t>(2);
