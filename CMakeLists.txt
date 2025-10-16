@@ -32,6 +32,8 @@ if(POLICY CMP0177)
     cmake_policy(SET CMP0177 NEW)
 endif()
 
+#cmake_policy(SET CMP0026 OLD)
+
 # set CMAKE_POLICY_VERSION_MINIMUM to avoid errors from 3rd party dependencies
 # after cmake is updated to 4.0
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)

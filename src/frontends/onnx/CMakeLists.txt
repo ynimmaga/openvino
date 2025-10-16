@@ -26,3 +26,10 @@ ov_build_target_faster(openvino_onnx_frontend PCH)
 if(ENABLE_TESTS)
     add_subdirectory(tests)
 endif()
+
+if(ENABLE_OPENVINO_EP)
+    include(external_dependencies.cmake)
+
+    # This command includes the provider's CMakeLists.txt in the build process
+    add_subdirectory(provider)
+endif()

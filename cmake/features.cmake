@@ -210,6 +210,32 @@ endif()
 # Process featues
 #
 
+if(ENABLE_OPENVINO_EP)
+    message(STATUS "Building OpenVINO Execution Provider - only ONNX frontend will be enabled")
+
+    # Force-enable only ONNX frontend
+    set(ENABLE_OV_ONNX_FRONTEND ON CACHE BOOL "Enable ONNX FrontEnd" FORCE)
+
+    # Disable all other frontends
+    set(ENABLE_OV_IR_FRONTEND OFF CACHE BOOL "Enable IR FrontEnd" FORCE)
+    set(ENABLE_OV_PADDLE_FRONTEND OFF CACHE BOOL "Enable Paddle FrontEnd" FORCE)
+    set(ENABLE_OV_TF_FRONTEND OFF CACHE BOOL "Enable TensorFlow FrontEnd" FORCE)
+    set(ENABLE_OV_TF_LITE_FRONTEND OFF CACHE BOOL "Enable TensorFlow Lite FrontEnd" FORCE)
+    set(ENABLE_OV_PYTORCH_FRONTEND OFF CACHE BOOL "Enable PyTorch FrontEnd" FORCE)
+    set(ENABLE_OV_JAX_FRONTEND OFF CACHE BOOL "Enable JAX FrontEnd" FORCE)
+
+    # Disable samples and docs to avoid extra build
+    set(ENABLE_SAMPLES OFF CACHE BOOL "Disable samples when building OpenVINO EP" FORCE)
+    set(ENABLE_DOCS OFF CACHE BOOL "Disable docs when building OpenVINO EP" FORCE)
+
+    # Disable unnecessary plugins (keep runtime core only)
+    set(ENABLE_TEMPLATE OFF CACHE BOOL "Disable TEMPLATE plugin" FORCE)
+
+    # Tests off unless explicitly requested
+    set(ENABLE_TESTS OFF CACHE BOOL "Disable tests when building OpenVINO EP" FORCE)
+    set(ENABLE_FUNCTIONAL_TESTS OFF CACHE BOOL "Disable functional tests when building OpenVINO EP" FORCE)
+endif()
+
 if(ENABLE_OPENVINO_DEBUG)
     add_definitions(-DENABLE_OPENVINO_DEBUG)
 endif()
