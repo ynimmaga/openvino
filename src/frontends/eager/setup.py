@@ -40,10 +40,10 @@ setup(
         CppExtension(
             name="npu_backend",
             sources=[
-                "csrc/npu_backend.cpp",
-                "csrc/eager_ops.cpp",
+                "common/src/npu_backend.cpp",
+                "pytorch/src/eager_ops.cpp",
             ],
-            include_dirs=[_ov_include, _pt_fe_include],
+            include_dirs=[_ov_include, _pt_fe_include, "pytorch/src"],
             extra_compile_args=["-std=c++17"],
             extra_link_args=[
                 os.path.join(_ov_libs, "libopenvino.so.2610"),

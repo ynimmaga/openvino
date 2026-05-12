@@ -115,21 +115,72 @@ at::Tensor npu_empty(c10::IntArrayRef size,
 at::Tensor& npu_copy_(at::Tensor& self, const at::Tensor& src,
                        bool non_blocking) {
     (void)non_blocking;
-    // If same dtype and size, direct memcpy
-    if (self.scalar_type() == src.scalar_type() && self.nbytes() == src.nbytes()) {
-        if (self.data_ptr() != src.data_ptr()) {
-            std::memcpy(self.data_ptr(), src.data_ptr(), self.nbytes());
+    TORCH_CHECK(self.sizes() == src.sizes(),
+                "npu_copy_: shape mismatch ", self.sizes(), " vs ", src.sizes());
+
+    // Strided element-wise copy that respects both src and dst strides
+    // (and storage_offset).  This handles non-contiguous views correctly,
+    // which a raw memcpy of nbytes() does not.
+    auto do_strided_copy = [](void* dst_base_v, c10::IntArrayRef sizes,
+                              c10::IntArrayRef dst_strides,
+                              const void* src_base_v,
+                              c10::IntArrayRef src_strides,
+                              int64_t itemsize) {
+        const int ndim = static_cast<int>(sizes.size());
+        if (ndim == 0) {
+            std::memcpy(dst_base_v, src_base_v, itemsize);
+            return;
+        }
+        char* dst_base = static_cast<char*>(dst_base_v);
+        const char* src_base = static_cast<const char*>(src_base_v);
+        std::vector<int64_t> idx(ndim, 0);
+        int64_t total = 1;
+        for (auto s : sizes) total *= s;
+        for (int64_t k = 0; k < total; ++k) {
+            int64_t s_off = 0, d_off = 0;
+            for (int d = 0; d < ndim; ++d) {
+                s_off += idx[d] * src_strides[d];
+                d_off += idx[d] * dst_strides[d];
+            }
+            std::memcpy(dst_base + d_off * itemsize,
+                        src_base + s_off * itemsize, itemsize);
+            for (int d = ndim - 1; d >= 0; --d) {
+                if (++idx[d] < sizes[d]) break;
+                idx[d] = 0;
+            }
+        }
+    };
+
+    const auto src_itemsize = static_cast<int64_t>(src.dtype().itemsize());
+    const auto dst_itemsize = static_cast<int64_t>(self.dtype().itemsize());
+    const auto* src_base = static_cast<const char*>(src.storage().data()) +
+                           static_cast<int64_t>(src.storage_offset()) * src_itemsize;
+    auto* dst_base = static_cast<char*>(self.storage().mutable_data()) +
+                     static_cast<int64_t>(self.storage_offset()) * dst_itemsize;
+
+    if (self.scalar_type() == src.scalar_type()) {
+        // Fast path: both contig with no offset → bulk memcpy
+        if (self.is_contiguous() && src.is_contiguous() &&
+            self.storage_offset() == 0 && src.storage_offset() == 0 &&
+            self.nbytes() == src.nbytes()) {
+            if (self.data_ptr() != src.data_ptr()) {
+                std::memcpy(self.data_ptr(), src.data_ptr(), self.nbytes());
+            }
+        } else {
+            do_strided_copy(dst_base, self.sizes(), self.strides(),
+                            src_base,  src.strides(), src_itemsize);
         }
     } else {
-        // Use CPU tensors for dtype conversion
+        // Need dtype conversion.  Materialise src to a contiguous CPU tensor
+        // in src's dtype (respecting strides), convert dtype on CPU, then
+        // strided-copy the converted result into self.
         auto cpu_src = at::empty(src.sizes(),
             at::TensorOptions().dtype(src.scalar_type()).device(at::kCPU));
-        std::memcpy(cpu_src.data_ptr(), src.data_ptr(), src.nbytes());
-        auto cpu_dst = cpu_src.to(self.scalar_type());
-        TORCH_CHECK(cpu_dst.nbytes() == self.nbytes(),
-                    "copy_ size mismatch after cast: ", cpu_dst.nbytes(),
-                    " vs ", self.nbytes());
-        std::memcpy(self.data_ptr(), cpu_dst.data_ptr(), self.nbytes());
+        do_strided_copy(cpu_src.data_ptr(), src.sizes(), cpu_src.strides(),
+                        src_base, src.strides(), src_itemsize);
+        auto cpu_dst = cpu_src.to(self.scalar_type()).contiguous();
+        do_strided_copy(dst_base, self.sizes(), self.strides(),
+                        cpu_dst.data_ptr(), cpu_dst.strides(), dst_itemsize);
     }
     return self;
 }
@@ -142,13 +193,19 @@ at::Tensor npu_empty_strided(c10::IntArrayRef size, c10::IntArrayRef stride,
                               std::optional<bool> pin_memory) {
     (void)layout; (void)device; (void)pin_memory;
     auto dt = dtype.value_or(at::ScalarType::Float);
-    // Compute storage size from max offset
+    // Compute storage size from the maximum addressable offset:
+    // 1 + sum_d (size[d] - 1) * stride[d]   (only for dims with size > 0).
+    // Using max per-dim (the previous implementation) under-allocates for
+    // permuted/transposed layouts, leading to heap corruption.
     int64_t storage_size = 1;
+    int64_t max_offset = 0;
+    bool any_zero = false;
     for (size_t i = 0; i < size.size(); ++i) {
-        if (size[i] > 0) {
-            storage_size = std::max(storage_size,
-                (size[i] - 1) * stride[i] + 1);
-        }
+        if (size[i] == 0) { any_zero = true; break; }
+        max_offset += (size[i] - 1) * stride[i];
+    }
+    if (!any_zero) {
+        storage_size = max_offset + 1;
     }
     auto nbytes = storage_size * static_cast<int64_t>(c10::elementSize(dt));
 
@@ -178,7 +235,7 @@ at::Tensor& npu_fill_scalar(at::Tensor& self, const at::Scalar& value) {
     auto n = self.numel();
     if (n == 0) return self;
 
-    AT_DISPATCH_ALL_TYPES_AND2(at::kHalf, at::kBFloat16, dt, "npu_fill_", [&] {
+    AT_DISPATCH_ALL_TYPES_AND3(at::kHalf, at::kBFloat16, at::kBool, dt, "npu_fill_", [&] {
         auto val = value.to<scalar_t>();
         auto* ptr = static_cast<scalar_t*>(self.data_ptr());
         for (int64_t i = 0; i < n; ++i) {
@@ -242,11 +299,23 @@ at::Tensor npu_view(const at::Tensor& self, c10::SymIntArrayRef size) {
     if (neg_one_idx >= 0) {
         inferred[neg_one_idx] = self.numel() / product;
     }
-    auto strides = at::detail::defaultStrides(inferred);
+
+    // Compute view strides that respect the existing (possibly non-contiguous)
+    // input layout.  Using defaultStrides() unconditionally is wrong because
+    // it scrambles values when the source is a transposed/sliced view.
+    // at::detail::computeStride returns nullopt if the requested view is not
+    // expressible as a reinterpret of the source (caller must reshape+clone).
+    auto maybe_strides = at::detail::computeStride(
+        self.sizes(), self.strides(), inferred);
+    TORCH_CHECK(maybe_strides.has_value(),
+                "npu_view: shape ", inferred, " is not compatible with input "
+                "size ", self.sizes(), " stride ", self.strides(),
+                " (use reshape() instead).");
+
     auto result = at::detail::make_tensor<c10::TensorImpl>(
         c10::Storage(self.storage()), self.key_set(), self.dtype());
     result.unsafeGetTensorImpl()->set_storage_offset(self.storage_offset());
-    result.unsafeGetTensorImpl()->set_sizes_and_strides(inferred, strides);
+    result.unsafeGetTensorImpl()->set_sizes_and_strides(inferred, *maybe_strides);
     return result;
 }
 
@@ -290,37 +359,71 @@ at::Tensor npu_to_copy(const at::Tensor& self,
     auto target_device = device.value_or(self.device());
     auto target_dtype = dtype.value_or(self.scalar_type());
 
+    // Number of bytes needed to fully cover the strided view of `self` from
+    // its data_ptr() (which already includes storage_offset).
+    //   bytes = (1 + sum_d (size[d]-1) * stride[d]) * itemsize
+    // For contiguous tensors this equals nbytes(); for non-contiguous (e.g.
+    // transposed / sliced) views it can be larger than nbytes().
+    auto view_storage_bytes = [](const at::Tensor& t) -> int64_t {
+        if (!t.defined() || t.numel() == 0) return 0;
+        auto sizes = t.sizes();
+        auto strides = t.strides();
+        int64_t max_off = 0;
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            if (sizes[i] == 0) return 0;
+            max_off += (sizes[i] - 1) * strides[i];
+        }
+        return (max_off + 1) * static_cast<int64_t>(t.dtype().itemsize());
+    };
+
     if (target_device.type() == at::DeviceType::PrivateUse1) {
-        // Creating NPU tensor
-        auto result = npu_empty(self.sizes(), target_dtype,
-                                 self.layout(), target_device,
-                                 false, c10::nullopt);
+        // Creating NPU tensor — preserve strides so a raw byte copy of the
+        // source storage stays consistent with the destination layout.
+        auto result = npu_empty_strided(self.sizes(), self.strides(),
+                                         target_dtype, self.layout(),
+                                         target_device, false);
+        const int64_t copy_bytes = view_storage_bytes(self);
         // If need dtype conversion, use CPU intermediate
         if (target_dtype != self.scalar_type()) {
-            auto cpu_src = at::empty(self.sizes(),
+            auto cpu_src = at::empty_strided(self.sizes(), self.strides(),
                 at::TensorOptions().dtype(self.scalar_type()).device(at::kCPU));
-            std::memcpy(cpu_src.data_ptr(), self.data_ptr(), self.nbytes());
-            auto cpu_converted = cpu_src.to(target_dtype);
+            if (copy_bytes > 0) {
+                std::memcpy(cpu_src.data_ptr(), self.data_ptr(), copy_bytes);
+            }
+            auto cpu_converted = cpu_src.contiguous().to(target_dtype);
+            // Result must now be contiguous since we materialised on CPU.
+            result = npu_empty(self.sizes(), target_dtype,
+                                self.layout(), target_device,
+                                false, c10::nullopt);
             std::memcpy(result.data_ptr(), cpu_converted.data_ptr(), result.nbytes());
         } else {
-            if (self.nbytes() > 0) {
-                std::memcpy(result.data_ptr(), self.data_ptr(), self.nbytes());
+            if (copy_bytes > 0) {
+                std::memcpy(result.data_ptr(), self.data_ptr(), copy_bytes);
             }
         }
         return result;
     } else {
-        // Moving to CPU or other device
-        auto cpu_result = at::empty(self.sizes(),
+        // Moving to CPU or other device.  Preserve the source strides so the
+        // raw byte copy of the NPU storage is interpreted correctly on the
+        // CPU side (a contiguous CPU buffer would mis-read non-contiguous
+        // NPU storage and silently corrupt values).
+        auto cpu_result = at::empty_strided(self.sizes(), self.strides(),
             at::TensorOptions().dtype(target_dtype).device(at::kCPU));
+        const int64_t copy_bytes = view_storage_bytes(self);
         if (target_dtype != self.scalar_type()) {
-            auto cpu_src = at::empty(self.sizes(),
+            // Need dtype conversion: do it after copying raw storage so the
+            // strided layout is preserved on the CPU side.
+            auto cpu_src = at::empty_strided(self.sizes(), self.strides(),
                 at::TensorOptions().dtype(self.scalar_type()).device(at::kCPU));
-            std::memcpy(cpu_src.data_ptr(), self.data_ptr(), self.nbytes());
-            auto cpu_converted = cpu_src.to(target_dtype);
-            std::memcpy(cpu_result.data_ptr(), cpu_converted.data_ptr(), cpu_result.nbytes());
+            if (copy_bytes > 0) {
+                std::memcpy(cpu_src.data_ptr(), self.data_ptr(), copy_bytes);
+            }
+            // Materialise to a contiguous CPU tensor in the original dtype,
+            // convert dtype, then return that (already contiguous).
+            cpu_result = cpu_src.contiguous().to(target_dtype);
         } else {
-            if (self.nbytes() > 0) {
-                std::memcpy(cpu_result.data_ptr(), self.data_ptr(), self.nbytes());
+            if (copy_bytes > 0) {
+                std::memcpy(cpu_result.data_ptr(), self.data_ptr(), copy_bytes);
             }
         }
         if (target_device.type() == at::kCPU) {
