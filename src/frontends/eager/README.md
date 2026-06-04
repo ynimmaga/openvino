@@ -28,7 +28,9 @@ eager/
 │       └── npu_backend.cpp         ← device infra: allocator, guard, empty,
 │                                     copy_, view, as_strided, _to_copy
 ├── pytorch/
-│   ├── include/                    ← OpenVINO PT-frontend public headers
+│   │                                  (PT-frontend public headers come from
+│   │                                   the sibling ../pytorch/include —
+│   │                                   not vendored here)
 │   ├── src/
 │   │   ├── eager_decoder.h         ← TorchDecoder shim (graph/op/const)
 │   │   │                             that fakes a one-op TorchScript graph
@@ -126,44 +128,59 @@ see exactly where each op went.
 ## Build & Setup
 
 ### Prerequisites
-- Python 3.10 in a virtualenv (`$VIRTUAL_ENV` must point to it).
+- Python 3.10 or later in a virtualenv (`$VIRTUAL_ENV` must point to it).
+  Validated against Python 3.12.
 - PyTorch 2.x (`torch.utils.rename_privateuse1_backend` and
-  `generate_methods_for_privateuse1_backend` must exist).
-- OpenVINO 2026.x installed in the same venv as `pip install openvino` so
-  that `$VIRTUAL_ENV/lib/python3.10/site-packages/openvino/` exists with
-  `include/` and `libs/libopenvino*.so.2610`.
+  `generate_methods_for_privateuse1_backend` must exist), installed in the venv.
+- An OpenVINO 2026.x runtime with C++ headers and shared libraries. By default
+  `setup.py` looks for an in-tree build installed under `<openvino>/dist/runtime`
+  (`include/` for headers, `lib/intel64/libopenvino*.so` for the libraries).
+  To use a different OpenVINO instead, set `OPENVINO_DIST` to its runtime root.
 - A C++17 compiler.
+
+> Build and install OpenVINO first if you have not already. Configure with
+> `-DENABLE_PYTHON=ON`, build, then install into `<openvino>/dist` — this is
+> what the in-tree default below expects:
+>
+> ```bash
+> cd <openvino>
+> cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_PYTHON=ON
+> cmake --build build -j
+> cmake --install build --prefix dist
+> ```
 
 ### Build
 
 ```bash
-cd /home/icx-6338/ynimmaga/openvino_xpu/src/frontends/eager
+cd <openvino>/src/frontends/eager      # <openvino> = your OpenVINO repo root
 python setup.py install
 ```
 
 This builds the C++ extension `npu_backend` from
 `common/src/npu_backend.cpp` + `pytorch/src/eager_ops.cpp`, links it against
-`libopenvino.so.2610` and `libopenvino_pytorch_frontend.so.2610`, and installs
-the `intel_npu` package together with an `intel_npu.pth` so it auto-loads on
-interpreter start.
+`libopenvino.so` and `libopenvino_pytorch_frontend.so` (resolved from
+`$OPENVINO_DIST/lib/intel64`, defaulting to `openvino/dist/runtime`), and
+installs the `intel_npu` package together with an `intel_npu.pth` so it
+auto-loads on interpreter start.
 
 ### Iterative dev build (avoid full reinstall)
 
 After modifying any source file:
 
 ```bash
-cd /home/icx-6338/ynimmaga/openvino_xpu/src/frontends/eager
+cd <openvino>/src/frontends/eager
 touch common/src/npu_backend.cpp pytorch/src/eager_ops.cpp pytorch/src/eager_decoder.h
 python setup.py install
 ```
 
-If you'd rather work in-place without `pip install`:
+If you'd rather work in-place without `pip install` (adjust `python3.X` to your
+venv's version):
 
 ```bash
 printf '%s\n' \
-  '/home/icx-6338/ynimmaga/openvino_xpu/src/frontends/eager' \
+  "$(pwd)" \
   'import intel_npu' \
-  > $VIRTUAL_ENV/lib/python3.10/site-packages/intel_npu.pth
+  > "$VIRTUAL_ENV/lib/python3.X/site-packages/intel_npu.pth"
 ```
 
 ### Verify
@@ -176,6 +193,18 @@ python -c "import torch, intel_npu; print(torch.randn(2,3, device='npu') + 1)"
 ## Testing
 
 All tests live in `pytorch/tests/`. Run from the `eager/` directory.
+
+Some scripts (`test_single_op_e2e.py`, `test_compare_conversion.py`,
+`bench_convert.py`, `bench_e2e.py`) `import openvino` as a Python module. If
+OpenVINO is not pip-installed in the venv, point `PYTHONPATH` at the in-tree
+build's bindings first:
+
+```bash
+export PYTHONPATH=<openvino>/dist/python:$PYTHONPATH
+```
+
+The remaining tests (`test_correctness.py`, `test_eager.py`, …) only need the
+compiled `npu_backend` extension and work without this.
 
 ### Per-op numerical parity
 ```bash
@@ -195,6 +224,9 @@ python pytorch/tests/test_eager.py
 ```
 
 ### End-to-end LLM
+Requires `transformers` and `accelerate` in the venv
+(`pip install transformers accelerate`). Models are pulled from the HF Hub;
+`gpt2` is ungated, the others need an accepted license / `HF_TOKEN`.
 ```bash
 HF_MODEL=meta-llama/Llama-3.2-1B  python pytorch/tests/test_llm_xpu_npu.py
 HF_MODEL=Qwen/Qwen2.5-0.5B        python pytorch/tests/test_llm_xpu_npu.py
@@ -203,8 +235,9 @@ HF_MODEL=gpt2                     python pytorch/tests/test_llm_xpu_npu.py
 ```
 
 ### Op-coverage table (which ops ran on OV vs CPU)
+Same `transformers` / `HF_MODEL` requirements as the end-to-end LLM test above.
 ```bash
-python pytorch/tests/test_llm_xpu_npu_ops.py
+HF_MODEL=gpt2 python pytorch/tests/test_llm_xpu_npu_ops.py
 ```
 
 ### Microbenchmarks
