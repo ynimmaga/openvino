@@ -26,10 +26,9 @@
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/matmul.hpp"
-#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
-#    include "openvino/op/multiply.hpp"
-#    include "openvino/op/subtract.hpp"
-#endif
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/reshape.hpp"
+#include "openvino/op/subtract.hpp"
 #include "openvino/op/transpose.hpp"
 #include "openvino/pass/matcher_pass.hpp"
 #include "openvino/pass/pattern/matcher.hpp"
@@ -66,8 +65,44 @@ ov::intel_cpu::ConvertMatMulToFC::ConvertMatMulToFC() {
         // So in case of adding new operations that takes matmul inputs we need keep update fc_input_a and fc_input_b.
         auto fc_input_a = pattern_map.at(activations_m);
         auto fc_input_b = pattern_map.at(weights_m);
+        // A frontend that emits the model in a dtype other than the one the weights are
+        // dequantized in ends the decompression chain with a cast (a bf16 torch model, for
+        // instance, dequantizes in f16 and casts f16->bf16). Nothing marks that cast as
+        // decompression: MarkCompressedFloatConstants only marks Converts that target f32
+        // and sit directly on a Constant. Recognize the chain underneath it instead, so
+        // such weights still reach FullyConnected -- CompressedWeightsBlock already matches
+        // an optional trailing Convert, so the dequant is absorbed by
+        // ConvertFullyConnectedToFullyConnectedCompressed afterwards.
+        auto is_compressed_weights_path = [](const std::shared_ptr<Node>& convert) {
+            auto node = convert->get_input_node_shared_ptr(0);
+            // the dequantized weights may be reshaped and/or transposed before the cast
+            while (ov::is_type_any_of<ov::op::v1::Reshape, ov::op::v1::Transpose>(node)) {
+                node = node->get_input_node_shared_ptr(0);
+            }
+            auto multiply = ov::as_type_ptr<ov::op::v1::Multiply>(node);
+            if (!multiply) {
+                return false;
+            }
+            node = multiply->get_input_node_shared_ptr(0);
+            // zero point, present only for asymmetric compression
+            if (auto subtract = ov::as_type_ptr<ov::op::v1::Subtract>(node)) {
+                node = subtract->get_input_node_shared_ptr(0);
+            }
+            auto decompression_convert = ov::as_type_ptr<ov::op::v0::Convert>(node);
+            if (!decompression_convert) {
+                return false;
+            }
+            auto weights =
+                ov::as_type_ptr<ov::op::v0::Constant>(decompression_convert->get_input_node_shared_ptr(0));
+            return weights && any_of(weights->get_element_type(),
+                                     ov::element::u4,
+                                     ov::element::i4,
+                                     ov::element::u8,
+                                     ov::element::i8);
+        };
+
         if (auto convert_node = ov::as_type_ptr<ov::op::v0::Convert>(fc_input_b.get_node_shared_ptr())) {
-            if (!is_decompression(convert_node)) {
+            if (!is_decompression(convert_node) && !is_compressed_weights_path(convert_node)) {
                 return false;
             }
         }

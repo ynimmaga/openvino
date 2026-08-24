@@ -19,6 +19,7 @@
 #include "transformations/rt_info/decompression.hpp"
 #include "openvino/op/matmul.hpp"
 #include "openvino/op/multiply.hpp"
+#include "openvino/op/reshape.hpp"
 #include "openvino/op/subtract.hpp"
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/random_uniform.hpp"
@@ -255,6 +256,57 @@ TEST_F(ConvertMatMulToFCTests, CompressedU8WeightsWithSubMul) {
             std::make_shared<ov::op::v0::Constant>(ov::element::dynamic, ov::Shape{0}));
 
         model_ref = std::make_shared<ov::Model>(ov::OutputVector{matmul}, ov::ParameterVector{data});
+    }
+}
+
+// A model emitted in bf16 dequantizes int4 weights in f16 and ends the decompression
+// chain with an f16->bf16 cast that nothing marks as decompression: MarkCompressedFloat-
+// Constants only marks Converts that target f32 and sit directly on a Constant. The
+// MatMul must still become a FullyConnected, otherwise the dequant is left behind as a
+// runtime Convert + Multiply per layer instead of folding into FullyConnectedCompressed.
+TEST_F(ConvertMatMulToFCTests, CompressedI4WeightsWithUnmarkedTrailingConvert) {
+    {
+        auto data = std::make_shared<ov::opset1::Parameter>(ov::element::bf16, ov::Shape{2, 4});
+        auto weights = ov::opset1::Constant::create(ov::element::i4, ov::Shape{4, 2, 2}, {1});
+        auto convert = std::make_shared<ov::opset1::Convert>(weights, ov::element::f16);
+        auto mul_const = ov::opset1::Constant::create(ov::element::f16, ov::Shape{4, 2, 1}, {1});
+        auto mul = std::make_shared<ov::opset1::Multiply>(convert, mul_const);
+        auto reshape_const = ov::opset1::Constant::create(ov::element::i32, ov::Shape{2}, {4, 4});
+        auto reshape = std::make_shared<ov::opset1::Reshape>(mul, reshape_const, false);
+        auto cast = std::make_shared<ov::opset1::Convert>(reshape, ov::element::bf16);
+        auto matmul = std::make_shared<ov::opset1::MatMul>(data, cast, false, true);
+
+        model = std::make_shared<ov::Model>(ov::OutputVector{matmul}, ov::ParameterVector{data});
+    }
+    {
+        auto data = std::make_shared<ov::opset1::Parameter>(ov::element::bf16, ov::Shape{2, 4});
+        auto weights = ov::opset1::Constant::create(ov::element::i4, ov::Shape{4, 2, 2}, {1});
+        auto convert = std::make_shared<ov::opset1::Convert>(weights, ov::element::f16);
+        auto mul_const = ov::opset1::Constant::create(ov::element::f16, ov::Shape{4, 2, 1}, {1});
+        auto mul = std::make_shared<ov::opset1::Multiply>(convert, mul_const);
+        auto reshape_const = ov::opset1::Constant::create(ov::element::i32, ov::Shape{2}, {4, 4});
+        auto reshape = std::make_shared<ov::opset1::Reshape>(mul, reshape_const, false);
+        auto cast = std::make_shared<ov::opset1::Convert>(reshape, ov::element::bf16);
+        // transpose_b is already true, so the weights need no normalizing transpose
+        auto fc = std::make_shared<ov::op::internal::FullyConnected>(
+            data,
+            cast,
+            std::make_shared<ov::op::v0::Constant>(ov::element::dynamic, ov::Shape{0}));
+
+        model_ref = std::make_shared<ov::Model>(ov::OutputVector{fc}, ov::ParameterVector{data});
+    }
+}
+
+// The relaxation above must stay narrow: a bare precision cast on constant weights, with
+// no dequantization underneath it, is not a decompression path and is still rejected.
+TEST_F(ConvertMatMulToFCTests, PlainConvertWeightsNotConverted) {
+    {
+        auto data = std::make_shared<ov::opset1::Parameter>(ov::element::bf16, ov::Shape{2, 4});
+        auto weights = ov::opset1::Constant::create(ov::element::f32, ov::Shape{4, 4}, {1});
+        auto cast = std::make_shared<ov::opset1::Convert>(weights, ov::element::bf16);
+        auto matmul = std::make_shared<ov::opset1::MatMul>(data, cast, false, true);
+
+        model = std::make_shared<ov::Model>(ov::OutputVector{matmul}, ov::ParameterVector{data});
     }
 }
 
