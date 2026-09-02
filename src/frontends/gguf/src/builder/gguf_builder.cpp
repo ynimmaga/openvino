@@ -68,6 +68,11 @@ ov::AnyMap extract_tokenizer_config(const std::unordered_map<std::string, GGUFMe
 }  // namespace
 
 std::shared_ptr<GgufGraph> build_ggml_graph_from_gguf(const std::string& file) {
+    return build_ggml_graph_from_gguf(file, EmitterFactory());
+}
+
+std::shared_ptr<GgufGraph> build_ggml_graph_from_gguf(const std::string& file,
+                                                      const EmitterFactory& make_emitter) {
     auto [metadata, weights, qtypes, mmap, quant_buf] = get_gguf_data(file);
 
     // Decide the family FIRST: the metadata key layout differs per family, so reading any
@@ -94,7 +99,8 @@ std::shared_ptr<GgufGraph> build_ggml_graph_from_gguf(const std::string& file) {
                       "end-to-end verified against a reference. Validate accuracy before relying on it.");
     }
 
-    std::unique_ptr<ModelBuilder> builder = std::make_unique<DecoderBuilder>(config, weights, qtypes);
+    std::unique_ptr<ModelBuilder> builder = std::make_unique<DecoderBuilder>(
+        config, weights, qtypes, make_emitter ? make_emitter(weights, qtypes, arch) : nullptr);
     auto graph = builder->build();
     graph->tokenizer_config = extract_tokenizer_config(metadata);
     return graph;

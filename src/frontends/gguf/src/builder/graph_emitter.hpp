@@ -17,6 +17,7 @@
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/op/parameter.hpp"
 #include "openvino/runtime/tensor.hpp"
+#include "openvino/frontend/gguf/visibility.hpp"
 #include "quant/gguf.hpp"
 
 namespace ov {
@@ -36,13 +37,15 @@ namespace gguf {
 //     translators that query it (MUL_MAT, RESHAPE, VIEW);
 //   - the set of already-emitted weight leaves, so a weight referenced by several ops (or tied,
 //     e.g. MQA tie-V) is emitted exactly once.
-class GraphEmitter {
+class GGUF_FRONTEND_API GraphEmitter {
 public:
     // `weights` / `qtypes` are the parser's tensor tables; they are referenced, not copied, and
     // must outlive the emitter.
     GraphEmitter(std::unordered_map<std::string, ov::Tensor>& weights,
                  std::unordered_map<std::string, GgufTensorType>& qtypes,
                  std::string arch);
+
+    virtual ~GraphEmitter() = default;
 
     // ---- graph under construction ----
     const std::shared_ptr<GgufGraph>& graph() const {
@@ -91,7 +94,7 @@ public:
 
     // Append one op node. `inputs` are producer tensor names (weights / model inputs / earlier node
     // outputs). Returns the output tensor name (== node name).
-    std::string add_op(const std::string& op_type,
+    virtual std::string add_op(const std::string& op_type,
                        const std::string& name,
                        const std::vector<std::string>& inputs,
                        const ov::PartialShape& out_shape,
@@ -99,13 +102,13 @@ public:
                        int op_case = 0,
                        std::map<std::string, ov::Any> attrs = {});
 
-    std::shared_ptr<ov::op::v0::Parameter> add_input(const std::string& name,
+    virtual std::shared_ptr<ov::op::v0::Parameter> add_input(const std::string& name,
                                                      ov::element::Type type,
                                                      const ov::PartialShape& shape);
 
-    void add_extra_input(const std::string& name, int64_t value);
+    virtual void add_extra_input(const std::string& name, int64_t value);
 
-    void add_extra_input_node(const std::string& name, const std::shared_ptr<ov::Node>& node);
+    virtual void add_extra_input_node(const std::string& name, const std::shared_ptr<ov::Node>& node);
 
     // Emit a weight as a GGML_OP_NONE leaf node carrying the parser's already-extracted tensors
     // (`<base>.weight` [+ `.scales` [+ `.zp`]] + qtype) as node attributes. translate_weight
@@ -116,27 +119,34 @@ public:
     // during the walk -- rather than materializing an ov::Node eagerly here.
     // `node_name` is the tensor name translators reference (the GGML_OP_NONE output);
     // `extracted` maps "<base>.weight"/".scales"/".zp" -> tensor; `qtype` is the ggml type.
-    void emit_weight_op(const std::string& node_name,
+    virtual void emit_weight_op(const std::string& node_name,
                         const std::unordered_map<std::string, ov::Tensor>& extracted,
                         GgufTensorType qtype,
                         const ov::PartialShape& shape_4d);
 
     // `ggml_name` is the full tensor name ending in ".weight" (the name translators reference).
-    void add_weight(const std::string& ggml_name);
+    virtual void add_weight(const std::string& ggml_name);
 
     // Emit a weight node `node_name` (ends in ".weight") reusing the parser's extracted tensors of
     // another weight `src_base` (base without ".weight"). Used for MQA tie-V, where V shares K's
     // weight tensor; the two GGML_OP_NONE leaves reference the same underlying ov::Tensor blobs
     // (cheap: SharedBuffer views into the parser's single quant buffer).
-    void add_weight_from(const std::string& node_name, const std::string& src_base);
+    virtual void add_weight_from(const std::string& node_name, const std::string& src_base);
 
     // Emit a plain (non-quantized) weight stored under its full GGUF name, e.g. a bias tensor
     // "blk.N.attn_q.bias" (no ".weight" suffix). It flows through the same GGML_OP_NONE +
     // translate_weight path; make_weight_node treats an F16/F32/BF16 blob as a plain Constant.
-    void add_named_weight(const std::string& ggml_name);
+    virtual void add_named_weight(const std::string& ggml_name);
 
     bool weight_emitted(const std::string& name) const {
         return m_emitted_weights.count(name) > 0;
+    }
+
+protected:
+    void record_tensor_meta(const std::string& name, const ov::PartialShape& shape,
+                            ov::element::Type type) {
+        m_tensor_shapes[name] = shape;
+        m_tensor_types[name] = type;
     }
 
 private:

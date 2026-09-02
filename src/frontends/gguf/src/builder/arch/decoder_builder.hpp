@@ -10,6 +10,8 @@
 #include <unordered_map>
 
 #include "builder/blocks/attention.hpp"
+#include <memory>
+
 #include "builder/decoder_config.hpp"
 #include "builder/graph_emitter.hpp"
 #include "builder/model_builder.hpp"
@@ -36,7 +38,8 @@ class DecoderBuilder : public ModelBuilder {
 public:
     DecoderBuilder(const std::map<std::string, GGUFMetaData>& config,
                    std::unordered_map<std::string, ov::Tensor>& weights,
-                   std::unordered_map<std::string, GgufTensorType>& qtypes);
+                   std::unordered_map<std::string, GgufTensorType>& qtypes,
+                           std::unique_ptr<GraphEmitter> emitter = nullptr);
 
     std::shared_ptr<GgufGraph> build() override;
 
@@ -60,7 +63,7 @@ private:
     std::string build_head(const std::string& cur);
 
     DecoderConfig m_cfg;
-    GraphEmitter m_emit;
+    std::unique_ptr<GraphEmitter> m_emit;
     blocks::KvCachePlan m_kv;
 
     // Per-node output shapes are STATIC, like the cgraph decoder (which builds the graph for a
