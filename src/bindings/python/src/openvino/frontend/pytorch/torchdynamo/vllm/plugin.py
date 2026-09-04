@@ -28,6 +28,19 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _compile_vllm_model(forward):
+    import torch
+
+    options = {"aot_autograd": True, "vllm": True}
+    return torch.compile(
+        forward,
+        backend="openvino",
+        fullgraph=False,
+        dynamic=None,
+        options=options,
+    )
+
+
 def _patch_cpu_model_runner():
     try:
         from vllm.v1.worker.cpu_model_runner import CPUModelRunner
@@ -79,7 +92,6 @@ def _patch_cpu_model_runner():
         except Exception as _e:
             logger.debug("[OV plugin] sampler install skipped: %s", _e)
 
-        import torch
         try:
             import openvino.torch  # noqa: F401  (registers backend)
         except Exception as e:
@@ -102,7 +114,6 @@ def _patch_cpu_model_runner():
         # (KV_CACHE_PRECISION=bf16, INFERENCE_PRECISION_HINT=bf16,
         # DYNAMIC_QUANTIZATION_GROUP_SIZE=32). Individual flags can be
         # overridden by adding them explicitly to `options`.
-        options = {"aot_autograd": True, "vllm": True}
         # dynamic=None (torch's default), not False: every distinct prefill
         # token count is a dynamo guard failure under False, costing a ~5.4 s
         # retrace plus a ~14 s OV compile_model, which recurs forever under a
@@ -113,13 +124,7 @@ def _patch_cpu_model_runner():
         # of them: ~5% over the static graph in steady state vs True's ~1.7x.
         # See vllm/docs/dynamic_shapes.md for the measurements and for the
         # frontend/backend fixes the symbolic graph depends on.
-        compiled = torch.compile(
-            self.model.forward,
-            backend="openvino",
-            fullgraph=False,
-            dynamic=None,
-            options=options,
-        )
+        compiled = _compile_vllm_model(self.model.forward)
         self.model.forward = compiled
 
         # lm_head runs OUTSIDE the OV-compiled forward() (in compute_logits()).
