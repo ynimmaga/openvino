@@ -22,6 +22,12 @@ add_subdirectory(common)
 add_subdirectory(core)
 add_subdirectory(frontends)
 
+# EXPERIMENTAL: executes GGUF models on a ggml backend (Vulkan/CPU/...) via the GGUF frontend's
+# decoder builder. OFF by default; pulls in ggml (github.com/ggml-org/ggml, MIT) when enabled.
+if(ENABLE_GGML_EMITTER)
+    add_subdirectory(ggml_emitter)
+endif()
+
 add_subdirectory(plugins)
 add_subdirectory(inference)
 include(cmake/openvino.cmake)

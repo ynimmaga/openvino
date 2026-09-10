@@ -51,6 +51,12 @@ if (ENABLE_INTEL_GPU)
     endif()
 endif()
 
+# EXPERIMENTAL. Builds openvino_ggml_emitter: executes GGUF models on a ggml backend
+# (Vulkan / CPU / CUDA / Metal) using the GGUF frontend's decoder builder as the graph
+# description. Pulls in ggml (github.com/ggml-org/ggml, MIT) -- a standalone project, NOT
+# llama.cpp. Off by default; the frontend itself never links ggml.
+ov_option (ENABLE_GGML_EMITTER "Experimental ggml execution backend for the GGUF frontend" OFF)
+
 ov_dependent_option (ENABLE_ONEDNN_FOR_GPU "Enable oneDNN with GPU support" ${ENABLE_ONEDNN_FOR_GPU_DEFAULT} "ENABLE_INTEL_GPU" OFF)
 ov_dependent_option (ENABLE_CM_FOR_GPU "Enable C for Metal (CM) kernels at GPU runtime" ON "ENABLE_INTEL_GPU" OFF)
 
