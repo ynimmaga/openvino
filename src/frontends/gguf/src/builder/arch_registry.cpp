@@ -33,6 +33,10 @@ const std::set<std::string>& verified_archs() {
         "qwen3",
         "phi3",     // phi-3 (fused QKV)
         "minicpm",  // NORMAL rope + scalar scales
+        // IBM Granite (dense). Same topology as llama plus four scalar multipliers
+        // (embedding / attention / residual / logits) emitted as GGML_OP_SCALE. Verified
+        // generating coherent text on granite-4.0-1b-Q4_0 via the ggml emitter on Vulkan.
+        "granite",
         "olmoe",    // OLMoE 1B-7B (MoE)
         // Qwen3.5/3.6 hybrid: Gated-DeltaNet linear attention on 3 of every 4 layers, full
         // attention with M-RoPE and an interleaved query+gate projection on the rest. Verified
