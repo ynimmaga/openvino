@@ -57,6 +57,10 @@ endif()
 # llama.cpp. Off by default; the frontend itself never links ggml.
 ov_option (ENABLE_GGML_EMITTER "Experimental ggml execution backend for the GGUF frontend" OFF)
 
+# Vulkan backend for the ggml emitter. Requires glslc to compile the SPIR-V shaders and adds
+# ~43 MB of precompiled shaders. Off leaves the ggml CPU backend only.
+ov_dependent_option (ENABLE_GGML_VULKAN "Build the ggml Vulkan backend" ON "ENABLE_GGML_EMITTER" OFF)
+
 ov_dependent_option (ENABLE_ONEDNN_FOR_GPU "Enable oneDNN with GPU support" ${ENABLE_ONEDNN_FOR_GPU_DEFAULT} "ENABLE_INTEL_GPU" OFF)
 ov_dependent_option (ENABLE_CM_FOR_GPU "Enable C for Metal (CM) kernels at GPU runtime" ON "ENABLE_INTEL_GPU" OFF)
 

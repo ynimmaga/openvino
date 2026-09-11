@@ -14,17 +14,10 @@
 
 set(TARGET_NAME openvino_ggml_emitter)
 
-find_package(ggml QUIET)
-
-if(NOT ggml_FOUND)
-    include(FetchContent)
-    FetchContent_Declare(ggml
-        GIT_REPOSITORY https://github.com/ggml-org/ggml.git
-        GIT_TAG        v0.23.0
-        GIT_SHALLOW    TRUE)
-    set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(ggml)
+# ggml is resolved once, centrally, by thirdparty/ggml (found or downloaded) -- see
+# thirdparty/dependencies.cmake. By this point ggml::ggml and ggml::ggml-base exist.
+if(NOT TARGET ggml::ggml)
+    message(FATAL_ERROR "openvino_ggml_emitter requires ggml; thirdparty/ggml did not provide it")
 endif()
 
 add_library(${TARGET_NAME} SHARED src/emitter.cpp)

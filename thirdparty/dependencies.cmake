@@ -175,6 +175,14 @@ if(ENABLE_INTEL_GPU)
 endif()
 
 #
+# ggml (downloaded on demand; see thirdparty/ggml/CMakeLists.txt)
+#
+
+if(ENABLE_GGML_EMITTER)
+    add_subdirectory(thirdparty/ggml EXCLUDE_FROM_ALL)
+endif()
+
+#
 # zlib
 #
 
