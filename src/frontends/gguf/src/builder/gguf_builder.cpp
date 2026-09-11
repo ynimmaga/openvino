@@ -88,7 +88,12 @@ std::shared_ptr<GgufGraph> build_ggml_graph_from_gguf(const std::string& file,
     auto config = decoder_config_from_meta(metadata);
 
     const std::string arch = std::get<std::string>(config.at("architecture"));
-    OPENVINO_ASSERT(supported_archs().count(arch),
+    // Test hook: OV_GGUF_ANY_ARCH=1 skips the accept-list so the generic builder can be probed
+    // against an architecture that is not registered yet. This answers "would this arch work if
+    // we just added its name?" -- see docs/adding_an_architecture.md. Never set in production:
+    // an arch that builds is not thereby verified against a reference.
+    const bool bypass_registry = std::getenv("OV_GGUF_ANY_ARCH") != nullptr;
+    OPENVINO_ASSERT(bypass_registry || supported_archs().count(arch),
                     "[GGUF] native GGUF builder does not support architecture '",
                     arch,
                     "'. See supported_archs() in builder/arch_registry.cpp for the full list.");
