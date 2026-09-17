@@ -6,33 +6,6 @@
 import os
 from typing import Optional
 
-
-def set_pre_import_env() -> None:
-    """Pin the env vLLM latches at import time. Must run before `import vllm`.
-
-    Only VLLM_USE_LAYERNAME, and it is forced rather than defaulted: the OV
-    backend has no working configuration at 1. vllm.utils.torch_utils computes
-    `_USE_LAYERNAME` and the LayerNameType op-schema alias at module import,
-    and at 1 torch hoists layer_name as an opaque graph *input* instead of a
-    constant -- torchdynamo/compile.py then calls .type() on it and dies.
-    Plain str keeps layer_name the constant the PA translator and side_channel
-    read off the FX node.
-
-    Setting it any later is useless: vllm.utils.torch_utils imports ahead of
-    vllm.platforms and vllm.plugins, so every entry-point group -- including
-    the one plugin.register() uses -- loads after the value is frozen. Nor can
-    it be undone from Python afterwards: the op schemas declare layer_name as
-    `PyObject` and keep it even if _USE_LAYERNAME/LayerNameType are patched.
-    """
-    os.environ["VLLM_USE_LAYERNAME"] = "0"
-
-
-# Run on import as well as on call, so importing anything from this package
-# before vLLM is enough -- no caller has to remember. A no-op when the plugin
-# entry point imports us, which is already past the point of no return.
-set_pre_import_env()
-
-
 def bool_opt(options, key: str, default: bool) -> bool:
     """Resolve a boolean option: options[key] > vLLM preset > default.
 
