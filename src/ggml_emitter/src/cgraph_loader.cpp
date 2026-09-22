@@ -141,9 +141,32 @@ struct Loader {
         if (op == "GGML_OP_RMS_NORM")  return ggml_rms_norm(c, in(n, 0), f_param(n, 0, 1e-5f));
         if (op == "GGML_OP_SCALE")     return ggml_scale_bias(c, in(n, 0), f_param(n, 0, 1.0f),
                                                               f_param(n, 1));
-        if (op == "GGML_OP_CONT")      return ggml_cont(c, in(n, 0));
-        if (op == "GGML_OP_SOFT_MAX")  return ggml_soft_max(c, in(n, 0));
+        if (op == "GGML_OP_CONT") {
+            // ggml_cont_2d/3d/4d make a tensor contiguous AND reshape it -- llama.cpp merges
+            // attention heads that way (12 heads x 32 -> 384). Plain ggml_cont would keep the
+            // source shape, so use the shape the artifact recorded.
+            const auto ne = n["ne"].get<std::vector<int64_t>>();
+            return ggml_cont_4d(c, in(n, 0), ne[0], ne[1], ne[2], ne[3]);
+        }
         if (op == "GGML_OP_SILU")      return ggml_silu(c, in(n, 0));
+        // LayerNorm. Encoder (BERT-family) models use this where decoders use RMS_NORM.
+        if (op == "GGML_OP_NORM")      return ggml_norm(c, in(n, 0), f_param(n, 0, 1e-5f));
+        if (op == "GGML_OP_SOFT_MAX") {
+            // Explicit (non-flash) attention passes a mask and a scale; a bare softmax has
+            // neither. Encoders take this path because their attention is bidirectional.
+            if (n["inputs"].size() > 1) {
+                return ggml_soft_max_ext(c, in(n, 0), in(n, 1), f_param(n, 0, 1.0f),
+                                         f_param(n, 1));
+            }
+            return ggml_soft_max(c, in(n, 0));
+        }
+        // Unary activations. op_params[0] holds the ggml_unary_op enum, which the dumper has
+        // already resolved into the op name, so nothing more needs decoding here.
+        if (op == "GGML_UNARY_OP_GELU")       return ggml_gelu(c, in(n, 0));
+        if (op == "GGML_UNARY_OP_GELU_QUICK") return ggml_gelu_quick(c, in(n, 0));
+        if (op == "GGML_UNARY_OP_RELU")       return ggml_relu(c, in(n, 0));
+        if (op == "GGML_UNARY_OP_SILU")       return ggml_silu(c, in(n, 0));
+        if (op == "GGML_UNARY_OP_TANH")       return ggml_tanh(c, in(n, 0));
 
         if (op == "GGML_OP_SET_ROWS") {
             // src order is (values, indices, dst) -- see ggml.c, where the comment calls it
@@ -201,6 +224,16 @@ struct Loader {
             if (!t) {
                 im.out.unsupported.insert(op);
                 continue;
+            }
+            // The artifact records what llama.cpp actually produced, so any divergence here is
+            // a reconstruction bug -- catch it at the node that caused it rather than letting a
+            // downstream op assert on operands whose provenance is no longer obvious.
+            const auto want = n["ne"].get<std::vector<int64_t>>();
+            for (int d = 0; d < 4; d++) {
+                OPENVINO_ASSERT(t->ne[d] == want[d],
+                                "[GGML] rebuilt node '", id, "' (", op, ") has ne[", d, "]=",
+                                t->ne[d], " but the artifact recorded ", want[d],
+                                " -- reconstruction does not match the dumped graph");
             }
             const std::string name = n["name"];
             ggml_set_name(t, name.empty() ? id.c_str() : name.c_str());
