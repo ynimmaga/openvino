@@ -13,14 +13,10 @@
 #include <cstdio>
 #include <cstring>
 
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml.h"
-#include "gguf.h"
+#include "model_impl.hpp"
 
 #include "builder/gguf_builder.hpp"
 #include "builder/graph_emitter.hpp"
-#include "openvino/core/except.hpp"
 
 namespace ov {
 namespace ggml_emitter {
@@ -28,8 +24,6 @@ namespace ggml_emitter {
 using namespace ov::frontend::gguf;
 
 namespace {
-
-constexpr int MAX_NODES = 8192;
 
 // ov::PartialShape is [ne3,ne2,ne1,ne0]; ggml's ne[] runs the other way.
 std::vector<int64_t> to_ne(const ov::PartialShape& ps, int64_t dyn) {
@@ -41,14 +35,6 @@ std::vector<int64_t> to_ne(const ov::PartialShape& ps, int64_t dyn) {
     }
     return ne;
 }
-
-// Caller-owned: the emitter is destroyed with the DecoderBuilder when the build call returns,
-// so everything the caller needs afterwards lives here.
-struct Out {
-    std::map<std::string, ggml_tensor*> map, externals;
-    std::set<std::string> unsupported;
-    ggml_tensor* last = nullptr;
-};
 
 class GgmlEmitter : public GraphEmitter {
 public:
@@ -263,28 +249,6 @@ const std::set<std::string>& handled_ops() {
     return ops;
 }
 
-struct GgmlModel::Impl {
-    ggml_backend_t backend = nullptr;
-    ggml_backend_buffer_t wbuf = nullptr, ebuf = nullptr;
-    ggml_context *wctx = nullptr, *ctx_g = nullptr, *ctx_ext = nullptr;
-    gguf_context* gg = nullptr;
-    ggml_gallocr_t alloc = nullptr;
-    ggml_cgraph* gf = nullptr;
-    std::map<std::string, ggml_tensor*> wmap;
-    Out out;
-
-    ~Impl() {
-        if (alloc) ggml_gallocr_free(alloc);
-        if (ebuf) ggml_backend_buffer_free(ebuf);
-        if (wbuf) ggml_backend_buffer_free(wbuf);
-        if (ctx_ext) ggml_free(ctx_ext);
-        if (ctx_g) ggml_free(ctx_g);
-        if (wctx) ggml_free(wctx);
-        if (gg) gguf_free(gg);
-        if (backend) ggml_backend_free(backend);
-    }
-};
-
 GgmlModel::GgmlModel() : m_impl(new Impl()) {}
 GgmlModel::~GgmlModel() = default;
 
@@ -296,50 +260,10 @@ std::shared_ptr<GgmlModel> GgmlModel::build(const std::string& gguf_path,
     constexpr int n_tokens = 1;
     std::shared_ptr<GgmlModel> model(new GgmlModel());
     auto& im = *model->m_impl;
-
-    ggml_backend_load_all();
-    ggml_backend_dev_t dev = nullptr;
-    if (!backend_name.empty()) {
-        dev = ggml_backend_dev_by_name(backend_name.c_str());
-        OPENVINO_ASSERT(dev, "[GGML] no such ggml backend device: ", backend_name);
-    } else {
-        dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-        if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
-        if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    }
-    OPENVINO_ASSERT(dev, "[GGML] no ggml backend device available");
-    im.backend = ggml_backend_dev_init(dev, nullptr);
-    OPENVINO_ASSERT(im.backend, "[GGML] failed to initialise backend");
-
-    // Weights, straight from the file, uploaded to the backend.
-    gguf_init_params gp = {true, &im.wctx};
-    im.gg = gguf_init_from_file(gguf_path.c_str(), gp);
-    OPENVINO_ASSERT(im.gg, "[GGML] cannot read gguf: ", gguf_path);
-    im.wbuf = ggml_backend_alloc_ctx_tensors(im.wctx, im.backend);
-    FILE* f = fopen(gguf_path.c_str(), "rb");
-    OPENVINO_ASSERT(f, "[GGML] cannot open: ", gguf_path);
-    const size_t doff = gguf_get_data_offset(im.gg);
-    std::vector<uint8_t> tmp;
-    for (ggml_tensor* t = ggml_get_first_tensor(im.wctx); t; t = ggml_get_next_tensor(im.wctx, t)) {
-        const int i = gguf_find_tensor(im.gg, ggml_get_name(t));
-        if (i < 0) {
-            continue;
-        }
-        tmp.resize(ggml_nbytes(t));
-        if (fseek(f, static_cast<long>(doff + gguf_get_tensor_offset(im.gg, i)), SEEK_SET) != 0 ||
-            fread(tmp.data(), 1, tmp.size(), f) != tmp.size()) {
-            fclose(f);
-            OPENVINO_THROW("[GGML] short read for tensor ", ggml_get_name(t));
-        }
-        ggml_backend_tensor_set(t, tmp.data(), 0, tmp.size());
-        im.wmap[ggml_get_name(t)] = t;
-    }
-    fclose(f);
-
-    im.ctx_ext = ggml_init({ggml_tensor_overhead() * 512, nullptr, true});
-    im.ctx_g = ggml_init({ggml_tensor_overhead() * MAX_NODES +
-                              ggml_graph_overhead_custom(MAX_NODES, false),
-                          nullptr, true});
+    im.n_kv = static_cast<size_t>(n_kv);
+    im.init_backend(backend_name);
+    im.load_weights(gguf_path);
+    im.init_contexts();
 
     auto factory = [&](std::unordered_map<std::string, ov::Tensor>& w,
                        std::unordered_map<std::string, GgufTensorType>& q,
@@ -349,32 +273,8 @@ std::shared_ptr<GgmlModel> GgmlModel::build(const std::string& gguf_path,
     };
     build_ggml_graph_from_gguf(gguf_path, factory);
 
-    if (!im.out.unsupported.empty()) {
-        std::string list;
-        for (const auto& u : im.out.unsupported) {
-            list += (list.empty() ? "" : ", ") + u;
-        }
-        OPENVINO_THROW("[GGML] emitter cannot translate: ", list,
-                       ". Add a case to GgmlEmitter::build() and a name to handled_ops().");
-    }
-    OPENVINO_ASSERT(im.out.last, "[GGML] builder produced no output tensor");
-
-    im.ebuf = ggml_backend_alloc_ctx_tensors(im.ctx_ext, im.backend);
-    im.gf = ggml_new_graph_custom(im.ctx_g, MAX_NODES, false);
-    ggml_build_forward_expand(im.gf, im.out.last);
-
-    im.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(im.backend));
-    OPENVINO_ASSERT(ggml_gallocr_alloc_graph(im.alloc, im.gf), "[GGML] graph allocation failed");
-
-    // KV caches live in ctx_ext, so they persist across compute() calls; ggml_set_rows writes
-    // through a view into that same buffer. Zero them before first use.
-    for (const auto& kv : im.out.externals) {
-        if (kv.first.rfind("cache_", 0) != 0) {
-            continue;
-        }
-        std::vector<char> z(ggml_nbytes(kv.second), 0);
-        ggml_backend_tensor_set(kv.second, z.data(), 0, z.size());
-    }
+    im.throw_if_unsupported();
+    im.finalize();
     return model;
 }
 

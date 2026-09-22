@@ -51,7 +51,20 @@ public:
                                             int n_kv,
                                             const std::string& backend_name = "",
                                             int rope_mode = -1);
+    /// Build from a dumped llama.cpp cgraph artifact ("ov-cgraph-v1", produced offline by the
+    /// dump_cgraph tool) plus the .gguf the weights live in. llama.cpp is NOT needed at runtime.
+    ///
+    /// The artifact is shape-static: n_tokens and n_kv were baked in when it was dumped, so one
+    /// artifact serves one configuration. Graph inputs are published under the same canonical
+    /// names as the emitter path (inp_tokens / inp_pos / inp_kv_idx / self_kq_mask), recovered
+    /// by which op consumes them, so callers bind inputs identically either way.
+    static std::shared_ptr<GgmlModel> from_cgraph(const std::string& cgraph_json,
+                                                  const std::string& gguf_path,
+                                                  const std::string& backend_name = "");
     ~GgmlModel();
+
+    /// KV slots the graph was built for. 0 if the source did not record it.
+    size_t context_size() const;
 
     /// Run one forward pass. Inputs must already be written via write_input().
     bool compute();
@@ -85,9 +98,12 @@ public:
     size_t node_count() const;
     std::string backend_name() const;
 
+    /// Internal state, defined only in the component's private model_impl.hpp (which is not
+    /// installed). Public so both graph-source implementations can reach it; opaque to callers.
+    struct Impl;
+
 private:
     GgmlModel();
-    struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
 

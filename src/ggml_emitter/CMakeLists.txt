@@ -20,13 +20,15 @@ if(NOT TARGET ggml::ggml)
     message(FATAL_ERROR "openvino_ggml_emitter requires ggml; thirdparty/ggml did not provide it")
 endif()
 
-add_library(${TARGET_NAME} SHARED src/emitter.cpp)
+add_library(${TARGET_NAME} SHARED src/emitter.cpp src/cgraph_loader.cpp)
 
 target_include_directories(${TARGET_NAME}
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     # The emitter subclasses GraphEmitter and calls build_ggml_graph_from_gguf, both of which
     # live in the frontend's private source tree rather than its public headers.
-    PRIVATE ${CMAKE_SOURCE_DIR}/src/frontends/gguf/src)
+    PRIVATE ${CMAKE_SOURCE_DIR}/src/frontends/gguf/src
+    # nlohmann/json parses the cgraph artifact; already vendored for the ONNX frontend.
+    PRIVATE ${CMAKE_SOURCE_DIR}/thirdparty/json/nlohmann_json/single_include)
 
 # openvino::core::dev supplies the dev-API headers (aligned_buffer, mmap_object) that the
 # frontend's private quant/gguf.hpp pulls in.
