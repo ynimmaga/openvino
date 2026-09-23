@@ -149,6 +149,26 @@ struct Loader {
             return ggml_cont_4d(c, in(n, 0), ne[0], ne[1], ne[2], ne[3]);
         }
         if (op == "GGML_OP_SILU")      return ggml_silu(c, in(n, 0));
+        // Vision towers: the patch embedding is a convolution, which ggml expresses as
+        // im2col + mul_mat. src0 is the kernel, src1 the image.
+        if (op == "GGML_OP_IM2COL") {
+            return ggml_im2col(c, in(n, 0), in(n, 1), i_param(n, 0, 1), i_param(n, 1, 1),
+                               i_param(n, 2), i_param(n, 3), i_param(n, 4, 1), i_param(n, 5, 1),
+                               i_param(n, 6) != 0, type_from_name(n["type"]));
+        }
+        if (op == "GGML_OP_CPY") {
+            // ggml_cpy(a, b): b is a real destination (already built -- often a cache view).
+            // ggml_cast(a, type): SELF-REFERENCING by design -- result->src[1] = result, per a
+            // comment in ggml.c ("needed by some backends for consistency with ggml_cpy_impl").
+            // The artifact preserves that: this node's own id appears in its own inputs. That
+            // can only be ggml_cast (a real dst tensor cannot be its own producer), so build the
+            // cast and let the artifact's own ne/type describe the destination.
+            const std::string& dst_id = n["inputs"][1].get<std::string>();
+            if (dst_id == n["id"].get<std::string>()) {
+                return ggml_cast(c, in(n, 0), type_from_name(n["type"]));
+            }
+            return ggml_cpy(c, in(n, 0), in(n, 1));
+        }
         // LayerNorm. Encoder (BERT-family) models use this where decoders use RMS_NORM.
         if (op == "GGML_OP_NORM")      return ggml_norm(c, in(n, 0), f_param(n, 0, 1e-5f));
         if (op == "GGML_OP_SOFT_MAX") {
