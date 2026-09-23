@@ -89,6 +89,20 @@ public:
     /// Graph inputs and KV caches as raw ggml handles, for callers that do link ggml.
     const std::map<std::string, ggml_tensor*>& externals() const;
 
+    /// Byte size of a weight as loaded from the .gguf, by its ORIGINAL gguf tensor name (not
+    /// the emitter's node id). 0 if there is no such weight.
+    ///
+    /// For VLM: a text token has to be converted to an embedding the same way the decoder's
+    /// own GET_ROWS(token_embd, id) would, so it can be fed through the same `embd` input the
+    /// vision projector's output uses -- the embedding-input decoder graph has no other way in.
+    /// This is the one place raw weight access is needed for that; it intentionally does not
+    /// dequantize, so it only gives useful rows for an F16/F32 embedding table as-is.
+    size_t weight_nbytes(const std::string& gguf_name) const;
+
+    /// Copy `nbytes` starting at `offset_bytes` out of a named weight's backend storage.
+    bool read_weight(const std::string& gguf_name, size_t offset_bytes, void* dst,
+                     size_t nbytes) const;
+
     /// The logits tensor produced by the last graph node.
     ggml_tensor* logits() const;
 
