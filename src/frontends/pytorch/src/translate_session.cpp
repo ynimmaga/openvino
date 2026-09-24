@@ -25,9 +25,7 @@
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
 using namespace ov::op;
 
@@ -377,6 +375,19 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
         // Since parameters can be added we need to list all current parameters
         std::set<size_t> param_names;
         for (const auto& param : *parameters) {
+            // Skip externally-added parameters with no numeric tensor id
+            // (e.g. "__pa__"-tagged side-channel inputs).
+            const auto& names = param->output(0).get_names();
+            bool has_numeric = false;
+            for (const auto& n : names) {
+                if (!n.empty() && std::isdigit(static_cast<unsigned char>(n[0]))) {
+                    has_numeric = true;
+                    break;
+                }
+            }
+            if (!has_numeric) {
+                continue;
+            }
             auto input_idx = decode_tensor_name(param->output(0));
             param_names.insert(input_idx);
         }
@@ -664,6 +675,4 @@ Output<Node> TranslateSession::get_reverseprop_op(const std::shared_ptr<TorchDec
     return std::make_shared<PtFrameworkNode>(node, OutputVector{value}, 1, true);
 }
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

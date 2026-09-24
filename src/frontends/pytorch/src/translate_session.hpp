@@ -4,13 +4,16 @@
 
 #pragma once
 
+#include <map>
+#include <memory>
+#include <string>
+
 #include "input_model.hpp"
 #include "openvino/frontend/extension/telemetry.hpp"
 #include "openvino/frontend/pytorch/node_context.hpp"
+#include "openvino/op/parameter.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
 /// For one call of convert and decode method of Frontend, it creates one TranslateSession object to save data for the
 /// translation session: telemetry statistics, operation translators (including extensions) registered for this
@@ -61,6 +64,13 @@ public:
 
     OutputVector convert_node(const NodeContext& context);
 
+    // Shared PagedAttention side-channel Parameters, keyed by tag, so all
+    // PA ops in the model reuse the same Parameter set.
+    std::map<std::string, std::shared_ptr<ov::op::v0::Parameter>> m_shared_pa_params;
+    // Shared derived PA side-channel Outputs (graph-level computations of
+    // past_lens, max_context_len etc. from seq_lens + query_start_loc).
+    std::map<std::string, ov::Output<ov::Node>> m_shared_pa_outputs;
+
 private:
     const frontend::InputModel::Ptr m_input_model;
     const std::unordered_map<std::string, CreatorFunction>& m_translator_map;
@@ -73,6 +83,4 @@ private:
     bool m_is_fx = false;
 };
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

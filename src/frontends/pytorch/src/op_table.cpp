@@ -10,9 +10,7 @@
 #include "utils.hpp"
 #include "utils_quantize.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 namespace op {
 
 #define OP_CONVERTER(op) OutputVector op(const NodeContext& node)
@@ -158,6 +156,8 @@ OP_CONVERTER(translate_linalg_matrix_norm);
 OP_CONVERTER(translate_linalg_vector_norm);
 OP_CONVERTER(translate_linear);
 OP_CONVERTER(translate_linspace);
+OP_CONVERTER(translate_lietorch_exp);
+OP_CONVERTER(translate_lietorch_act3);
 OP_CONVERTER(translate_list_construct);
 OP_CONVERTER(translate_list_unpack);
 OP_CONVERTER(translate_logaddexp);
@@ -343,6 +343,7 @@ OP_CONVERTER(translate_repeat_fx);
 OP_CONVERTER(translate_rsub_fx);
 OP_CONVERTER(translate_scalar_tensor_fx);
 OP_CONVERTER(translate_scaled_dot_product_attention_fx);
+OP_CONVERTER(translate_openvino_paged_attention);
 OP_CONVERTER(translate_search_sorted);
 OP_CONVERTER(translate_select_scatter_fx);
 OP_CONVERTER(translate_slice_fx);
@@ -814,6 +815,8 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_ts() {
         {"ov_ext::embedding", op::translate_embedding_ext},
         {"ov_ext::conv1d", op::translate_conv1d_ext},
         {"ov_ext::linear", op::translate_linear_ext},
+        {"lietorch::Exp", op::translate_lietorch_exp},
+        {"lietorch::Act3", op::translate_lietorch_act3},
         {"prim::abs", op::translate_1to1_match_1_inputs<opset10::Abs>},
         {"prim::Constant", op::translate_constant},
         {"prim::device", op::translate_constant},
@@ -876,6 +879,7 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten._safe_softmax.default", op::translate_softmax_fx},
         {"aten._scaled_dot_product_flash_attention.default", op::translate_scaled_dot_product_attention_fx},
         {"aten._scaled_dot_product_flash_attention_for_cpu.default", op::translate_scaled_dot_product_attention_fx},
+        {"openvino.paged_attention.default", op::translate_openvino_paged_attention},
         {"aten._softmax.default", op::translate_softmax_fx},
         {"aten._to_copy.default", op::translate_to_fx},
         {"aten._unsafe_view.default", op::translate_reshape},
@@ -984,6 +988,4 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_fx() {
     };
 };
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch
