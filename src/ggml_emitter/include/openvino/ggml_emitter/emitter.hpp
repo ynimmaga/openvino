@@ -83,25 +83,32 @@ public:
     /// Vocabulary size, i.e. the length of one logits row.
     size_t logits_size() const;
 
-    /// Copy the logits row out after compute(). `out` must hold logits_size() floats.
+    /// Copy the logits row out after compute(). `out` must hold logits_size() floats -- this
+    /// is ne[0] only, correct for a decoder. For a vision tower (ne[1] > 1, one row per patch)
+    /// use output_size()/read_output() instead.
     void read_logits(float* out) const;
+
+    /// Total elements in the last graph node, and a copy of all of them.
+    size_t output_size() const;
+    void read_output(float* out) const;
 
     /// Graph inputs and KV caches as raw ggml handles, for callers that do link ggml.
     const std::map<std::string, ggml_tensor*>& externals() const;
 
-    /// Byte size of a weight as loaded from the .gguf, by its ORIGINAL gguf tensor name (not
-    /// the emitter's node id). 0 if there is no such weight.
-    ///
-    /// For VLM: a text token has to be converted to an embedding the same way the decoder's
-    /// own GET_ROWS(token_embd, id) would, so it can be fed through the same `embd` input the
-    /// vision projector's output uses -- the embedding-input decoder graph has no other way in.
-    /// This is the one place raw weight access is needed for that; it intentionally does not
-    /// dequantize, so it only gives useful rows for an F16/F32 embedding table as-is.
+    /// Byte size of a named weight as loaded from the .gguf (by its original gguf tensor name,
+    /// not the emitter's node id). 0 if absent. No dequantization -- useful as-is only for an
+    /// F16/F32 tensor, e.g. a VLM's token_embd.weight (needed since an embedding-input decoder
+    /// has no GET_ROWS path, so the caller must look up a token's row itself).
     size_t weight_nbytes(const std::string& gguf_name) const;
 
     /// Copy `nbytes` starting at `offset_bytes` out of a named weight's backend storage.
     bool read_weight(const std::string& gguf_name, size_t offset_bytes, void* dst,
                      size_t nbytes) const;
+
+    /// Read a GGUF metadata key from the .gguf this model was built from (e.g. a VLM's
+    /// clip.vision.image_size / image_mean / image_std, needed to reimplement preprocessing).
+    bool gguf_meta_i32(const std::string& key, int32_t& out) const;
+    bool gguf_meta_f32_array(const std::string& key, std::vector<float>& out) const;
 
     /// The logits tensor produced by the last graph node.
     ggml_tensor* logits() const;

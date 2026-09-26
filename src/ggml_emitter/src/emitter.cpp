@@ -316,6 +316,15 @@ void GgmlModel::read_logits(float* out) const {
     ggml_backend_tensor_get(m_impl->out.last, out, 0, logits_size() * sizeof(float));
 }
 
+size_t GgmlModel::output_size() const {
+    const ggml_tensor* t = m_impl->out.last;
+    return static_cast<size_t>(t->ne[0]) * t->ne[1] * t->ne[2] * t->ne[3];
+}
+
+void GgmlModel::read_output(float* out) const {
+    ggml_backend_tensor_get(m_impl->out.last, out, 0, output_size() * sizeof(float));
+}
+
 const std::map<std::string, ggml_tensor*>& GgmlModel::externals() const {
     return m_impl->out.externals;
 }
@@ -332,6 +341,42 @@ bool GgmlModel::read_weight(const std::string& gguf_name, size_t offset_bytes, v
         return false;
     }
     ggml_backend_tensor_get(it->second, dst, offset_bytes, nbytes);
+    return true;
+}
+
+bool GgmlModel::gguf_meta_i32(const std::string& key, int32_t& out) const {
+    if (!m_impl->gg) {
+        return false;
+    }
+    const int64_t id = gguf_find_key(m_impl->gg, key.c_str());
+    if (id < 0) {
+        return false;
+    }
+    // GGUF writers vary on the signedness of a plain integer field (e.g. image_size is UINT32
+    // here); gguf_get_val_i32/u32 assert on an exact type match, so try both.
+    switch (gguf_get_kv_type(m_impl->gg, id)) {
+    case GGUF_TYPE_INT32:
+        out = gguf_get_val_i32(m_impl->gg, id);
+        return true;
+    case GGUF_TYPE_UINT32:
+        out = static_cast<int32_t>(gguf_get_val_u32(m_impl->gg, id));
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool GgmlModel::gguf_meta_f32_array(const std::string& key, std::vector<float>& out) const {
+    if (!m_impl->gg) {
+        return false;
+    }
+    const int64_t id = gguf_find_key(m_impl->gg, key.c_str());
+    if (id < 0 || gguf_get_arr_type(m_impl->gg, id) != GGUF_TYPE_FLOAT32) {
+        return false;
+    }
+    const size_t n = gguf_get_arr_n(m_impl->gg, id);
+    const float* data = static_cast<const float*>(gguf_get_arr_data(m_impl->gg, id));
+    out.assign(data, data + n);
     return true;
 }
 
