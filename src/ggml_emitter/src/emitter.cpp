@@ -329,6 +329,20 @@ const std::map<std::string, ggml_tensor*>& GgmlModel::externals() const {
     return m_impl->out.externals;
 }
 
+size_t GgmlModel::input_nbytes(const std::string& name) const {
+    auto it = m_impl->out.externals.find(name);
+    return it == m_impl->out.externals.end() ? 0 : ggml_nbytes(it->second);
+}
+
+bool GgmlModel::read_input(const std::string& name, void* dst, size_t bytes) const {
+    auto it = m_impl->out.externals.find(name);
+    if (it == m_impl->out.externals.end() || bytes > ggml_nbytes(it->second)) {
+        return false;
+    }
+    ggml_backend_tensor_get(it->second, dst, 0, bytes);
+    return true;
+}
+
 size_t GgmlModel::weight_nbytes(const std::string& gguf_name) const {
     auto it = m_impl->wmap.find(gguf_name);
     return it == m_impl->wmap.end() ? 0 : ggml_nbytes(it->second);

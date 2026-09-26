@@ -95,6 +95,15 @@ public:
     /// Graph inputs and KV caches as raw ggml handles, for callers that do link ggml.
     const std::map<std::string, ggml_tensor*>& externals() const;
 
+    /// Byte size of a named external tensor (input or KV cache). 0 if there is no such name.
+    size_t input_nbytes(const std::string& name) const;
+
+    /// Copy `bytes` out of a named external tensor -- the read counterpart of write_input(),
+    /// e.g. for moving KV cache state between two GgmlModel instances built for different batch
+    /// sizes over the same architecture (their cache tensors share shape, only query-side
+    /// inputs differ per bucket).
+    bool read_input(const std::string& name, void* dst, size_t bytes) const;
+
     /// Byte size of a named weight as loaded from the .gguf (by its original gguf tensor name,
     /// not the emitter's node id). 0 if absent. No dequantization -- useful as-is only for an
     /// F16/F32 tensor, e.g. a VLM's token_embd.weight (needed since an embedding-input decoder
