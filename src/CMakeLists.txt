@@ -25,8 +25,8 @@ add_subdirectory(frontends)
 # EXPERIMENTAL: executes GGUF models on a ggml backend (Vulkan/CPU/...) by replaying a graph
 # topology dumped offline from llama.cpp. OFF by default; pulls in ggml (github.com/ggml-org/ggml,
 # MIT) when enabled.
-if(ENABLE_GGML_EMITTER)
-    add_subdirectory(ggml_emitter)
+if(ENABLE_GGML_CGRAPH_LOADER)
+    add_subdirectory(ggml_cgraph_loader)
 endif()
 
 add_subdirectory(plugins)

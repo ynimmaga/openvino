@@ -4,7 +4,7 @@
 # ggml -- https://github.com/ggml-org/ggml (MIT)
 #
 # Downloaded on demand rather than vendored as a submodule: it is only needed when
-# ENABLE_GGML_EMITTER is set, and the Vulkan backend alone is ~43 MB of precompiled SPIR-V, so
+# ENABLE_GGML_CGRAPH_LOADER is set, and the Vulkan backend alone is ~43 MB of precompiled SPIR-V, so
 # there is no reason to make every clone pay for it.
 #
 # This is the STANDALONE ggml project, not llama.cpp. ggml is a self-contained CMake project with
@@ -19,7 +19,7 @@ find_package(ggml QUIET)
 if(ggml_FOUND)
     message(STATUS "ggml: using pre-installed ggml at ${ggml_DIR}")
     # find_package ran in THIS directory scope, so the imported targets it created are invisible
-    # to src/ggml_emitter. Promote them; ggml-config.cmake declares real IMPORTED targets (not
+    # to src/ggml_cgraph_loader. Promote them; ggml-config.cmake declares real IMPORTED targets (not
     # ALIASes), so this is legal here and only here.
     foreach(_tgt ggml::ggml ggml::ggml-base)
         if(TARGET ${_tgt})
@@ -66,7 +66,7 @@ FetchContent_Declare(ggml
 message(STATUS "ggml: fetching ${OV_GGML_GIT_TAG} (set -Dggml_DIR=... to use a prebuilt one)")
 FetchContent_MakeAvailable(ggml)
 
-# FetchContent gives bare targets (ggml, ggml-base); the emitter links the namespaced names that
+# FetchContent gives bare targets (ggml, ggml-base); the loader links the namespaced names that
 # find_package would have provided, so alias them and keep both paths identical.
 foreach(_tgt ggml ggml-base)
     if(TARGET ${_tgt} AND NOT TARGET ggml::${_tgt})
@@ -74,9 +74,9 @@ foreach(_tgt ggml ggml-base)
     endif()
 endforeach()
 
-# Co-locate the ggml libraries with OpenVINO's own, so the emitter finds its backends at runtime
+# Co-locate the ggml libraries with OpenVINO's own, so the loader finds its backends at runtime
 # without LD_LIBRARY_PATH: ggml_backend_load_all() dlopens ggml-cpu / ggml-vulkan by filename and
-# looks beside the loading library. Also install them, since the emitter is useless without them.
+# looks beside the loading library. Also install them, since the loader is useless without them.
 foreach(_tgt ggml ggml-base ggml-cpu ggml-vulkan)
     if(TARGET ${_tgt})
         set_target_properties(${_tgt} PROPERTIES

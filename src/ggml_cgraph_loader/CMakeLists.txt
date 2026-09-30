@@ -11,12 +11,12 @@
 #
 # Only this component links ggml.
 
-set(TARGET_NAME openvino_ggml_emitter)
+set(TARGET_NAME openvino_ggml_cgraph_loader)
 
 # ggml is resolved once, centrally, by thirdparty/ggml (found or downloaded) -- see
 # thirdparty/dependencies.cmake. By this point ggml::ggml and ggml::ggml-base exist.
 if(NOT TARGET ggml::ggml)
-    message(FATAL_ERROR "openvino_ggml_emitter requires ggml; thirdparty/ggml did not provide it")
+    message(FATAL_ERROR "openvino_ggml_cgraph_loader requires ggml; thirdparty/ggml did not provide it")
 endif()
 
 add_library(${TARGET_NAME} SHARED src/model.cpp src/cgraph_loader.cpp)

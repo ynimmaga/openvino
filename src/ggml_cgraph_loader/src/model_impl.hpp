@@ -20,10 +20,10 @@
 #include "gguf.h"
 
 #include "openvino/core/except.hpp"
-#include "openvino/ggml_emitter/emitter.hpp"
+#include "openvino/ggml_cgraph_loader/ggml_model.hpp"
 
 namespace ov {
-namespace ggml_emitter {
+namespace ggml_cgraph_loader {
 
 constexpr int MAX_NODES = 8192;
 
@@ -154,5 +154,5 @@ struct GgmlModel::Impl {
     }
 };
 
-}  // namespace ggml_emitter
+}  // namespace ggml_cgraph_loader
 }  // namespace ov

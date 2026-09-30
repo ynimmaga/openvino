@@ -7,12 +7,12 @@
 //
 // This file links ggml; consumers of the public header do not.
 
-#include "openvino/ggml_emitter/emitter.hpp"
+#include "openvino/ggml_cgraph_loader/ggml_model.hpp"
 
 #include "model_impl.hpp"
 
 namespace ov {
-namespace ggml_emitter {
+namespace ggml_cgraph_loader {
 
 GgmlModel::GgmlModel() : m_impl(new Impl()) {}
 GgmlModel::~GgmlModel() = default;
@@ -149,5 +149,5 @@ std::string GgmlModel::backend_name() const {
     return ggml_backend_name(m_impl->backend);
 }
 
-}  // namespace ggml_emitter
+}  // namespace ggml_cgraph_loader
 }  // namespace ov

@@ -8,8 +8,8 @@
 // artifact; from_cgraph() replays it op by op against ggml tensors. llama.cpp is a BUILD-TIME
 // tool only and never enters the runtime -- the executor here links ggml alone.
 //
-// LAYERING: this component is the only place ggml appears. Build it with -DENABLE_GGML_EMITTER=ON;
-// it is OFF by default.
+// LAYERING: this component is the only place ggml appears. Build it with
+// -DENABLE_GGML_CGRAPH_LOADER=ON; it is OFF by default.
 #pragma once
 
 #include <map>
@@ -18,21 +18,21 @@
 #include <string>
 #include <vector>
 
-#include "openvino/ggml_emitter/visibility.hpp"
+#include "openvino/ggml_cgraph_loader/visibility.hpp"
 
 struct ggml_tensor;
 struct ggml_context;
 struct ggml_cgraph;
 
 namespace ov {
-namespace ggml_emitter {
+namespace ggml_cgraph_loader {
 
 /// A GGUF model built into a ggml graph, ready to execute on a ggml backend.
 ///
 /// Owns the ggml contexts and the weight/graph buffers. `externals()` exposes the graph inputs
 /// (tokens, positions, KV write index, attention mask) and the KV caches, which persist across
 /// compute() calls so a generate loop can step the model.
-class OV_GGML_EMITTER_API GgmlModel {
+class OV_GGML_CGRAPH_LOADER_API GgmlModel {
 public:
     /// Build from a dumped llama.cpp cgraph artifact ("ov-cgraph-v1", produced offline by the
     /// dump_cgraph tool) plus the .gguf the weights live in. llama.cpp is NOT needed at runtime.
@@ -88,7 +88,7 @@ public:
     bool read_input(const std::string& name, void* dst, size_t bytes) const;
 
     /// Byte size of a named weight as loaded from the .gguf (by its original gguf tensor name,
-    /// not the emitter's node id). 0 if absent. No dequantization -- useful as-is only for an
+    /// not a graph node id). 0 if absent. No dequantization -- useful as-is only for an
     /// F16/F32 tensor, e.g. a VLM's token_embd.weight (needed since an embedding-input decoder
     /// has no GET_ROWS path, so the caller must look up a token's row itself).
     size_t weight_nbytes(const std::string& gguf_name) const;
@@ -120,5 +120,5 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-}  // namespace ggml_emitter
+}  // namespace ggml_cgraph_loader
 }  // namespace ov

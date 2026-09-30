@@ -32,7 +32,7 @@
 #include "model_impl.hpp"
 
 namespace ov {
-namespace ggml_emitter {
+namespace ggml_cgraph_loader {
 
 namespace {
 
@@ -353,5 +353,5 @@ size_t GgmlModel::context_size() const {
     return m_impl->n_kv;
 }
 
-}  // namespace ggml_emitter
+}  // namespace ggml_cgraph_loader
 }  // namespace ov

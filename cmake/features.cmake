@@ -51,15 +51,15 @@ if (ENABLE_INTEL_GPU)
     endif()
 endif()
 
-# EXPERIMENTAL. Builds openvino_ggml_emitter: executes GGUF models on a ggml backend
+# EXPERIMENTAL. Builds openvino_ggml_cgraph_loader: executes GGUF models on a ggml backend
 # (Vulkan / CPU / CUDA / Metal) by replaying a graph topology dumped offline from llama.cpp.
 # Pulls in ggml (github.com/ggml-org/ggml, MIT) -- a standalone project, NOT llama.cpp, which
 # is only a build-time dump tool and never a runtime dependency. Off by default.
-ov_option (ENABLE_GGML_EMITTER "Experimental ggml execution backend for dumped GGUF graphs" OFF)
+ov_option (ENABLE_GGML_CGRAPH_LOADER "Experimental ggml execution backend for dumped GGUF graphs" OFF)
 
-# Vulkan backend for the ggml emitter. Requires glslc to compile the SPIR-V shaders and adds
+# Vulkan backend for the ggml cgraph loader. Requires glslc to compile the SPIR-V shaders and adds
 # ~43 MB of precompiled shaders. Off leaves the ggml CPU backend only.
-ov_dependent_option (ENABLE_GGML_VULKAN "Build the ggml Vulkan backend" ON "ENABLE_GGML_EMITTER" OFF)
+ov_dependent_option (ENABLE_GGML_VULKAN "Build the ggml Vulkan backend" ON "ENABLE_GGML_CGRAPH_LOADER" OFF)
 
 ov_dependent_option (ENABLE_ONEDNN_FOR_GPU "Enable oneDNN with GPU support" ${ENABLE_ONEDNN_FOR_GPU_DEFAULT} "ENABLE_INTEL_GPU" OFF)
 ov_dependent_option (ENABLE_CM_FOR_GPU "Enable C for Metal (CM) kernels at GPU runtime" ON "ENABLE_INTEL_GPU" OFF)
