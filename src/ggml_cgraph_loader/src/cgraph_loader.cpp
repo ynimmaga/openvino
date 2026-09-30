@@ -16,7 +16,7 @@
 // 2. Inputs are identified by ROLE, not name. llama.cpp leaves most graph inputs ggml-autonamed
 //    ("leaf_5"), so their identity is recovered from which op consumes them -- ROPE[src1] is
 //    positions, SET_ROWS[src1] is a cache row index, and so on. The canonical names are then
-//    published through externals() so callers bind inputs identically for both graph sources.
+//    published through externals() so callers bind inputs by role, not by leaf name.
 //
 // SHAPE-STATIC: the artifact records n_tokens and n_kv because they are baked into every node's
 // dimensions. A mismatch is rejected rather than silently producing nonsense.
@@ -264,9 +264,9 @@ struct Loader {
     }
 
     // llama.cpp leaves most inputs ggml-autonamed, so recover their identity from the op that
-    // consumes them and publish canonical names. Callers then bind inputs the same way for both
-    // graph sources. Verified against the artifact: ROPE[src1] x32 = positions, SET_ROWS[src1]
-    // = cache row index, FLASH_ATTN_EXT[src3] = mask, GET_ROWS[src1] = tokens / out_ids.
+    // consumes them and publish canonical names. Verified against the artifact: ROPE[src1] x32 =
+    // positions, SET_ROWS[src1] = cache row index, FLASH_ATTN_EXT[src3] = mask, GET_ROWS[src1] =
+    // tokens / out_ids.
     void assign_roles(const json& doc) {
         std::map<std::string, std::string> role;  // leaf id -> canonical name
         int n_setrows = 0, n_getrows = 0;
