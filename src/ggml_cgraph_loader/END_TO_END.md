@@ -16,7 +16,7 @@ never loaded at runtime.
 ```mermaid
 flowchart LR
     subgraph offline["Offline (once per model / shape)"]
-        GGUF[model.gguf] --> DUMP[dump_cgraph / dump_vision<br/>links llama.cpp]
+        GGUF[model.gguf] --> DUMP[dump_cgraph / dump_vision<br/>links llama.cpp<br/>dump_whisper: whisper.cpp]
         DUMP --> JSON[cgraph.json<br/>ov-cgraph-v1]
     end
     subgraph runtime["Runtime (no llama.cpp)"]
@@ -69,6 +69,14 @@ N_TOKENS=8 ./dump_cgraph model.gguf decoder_b8.json 256
 # VLM: vision tower + an embedding-input text decoder
 ./dump_vision mmproj.gguf text-model.gguf vision.json 512
 DUMP_VLM_DECODER=1 ./dump_cgraph text-model.gguf vlm_decoder.json 256
+```
+
+Speech recognition (whisper.cpp model, not llama.cpp — build with `WHISPER_CPP_DIR` set, see the
+generator README):
+
+```sh
+# -> whisper.encoder.json, whisper.decoder.json, whisper.gguf (weights + whisper.* metadata)
+./dump_whisper ggml-base.bin whisper
 ```
 
 Every artifact is **shape-static**: valid only for the `(n_tokens, n_kv)` (or image size `px`)
@@ -170,7 +178,23 @@ auto res = pipe.generate("What is in the image?", image, cfg);
 Image preprocessing (resize + normalize) is reimplemented in GenAI using
 `clip.vision.image_size` / `image_mean` / `image_std` from the mmproj's GGUF metadata.
 
-### 5d. Driving `GgmlModel` directly (no GenAI)
+### 5d. Speech recognition — `GgmlWhisperPipeline`
+
+```cpp
+#include "openvino/genai/ggml_whisper_pipeline.hpp"
+
+ov::genai::GgmlWhisperPipeline pipe("whisper.encoder.json", "whisper.decoder.json", "whisper.gguf");
+std::vector<float> audio = ...;              // 16 kHz mono, [-1, 1] -- same as WhisperPipeline
+auto cfg = pipe.get_generation_config();     // token ids / lang_to_id come from the model
+cfg.language = "<|en|>";                     // optional; detected when unset
+cfg.task = "transcribe";                     // or "translate"
+auto res = pipe.generate(audio, cfg);        // res.texts[0], res.language
+```
+
+Log-mel features come from GenAI's `WhisperFeatureExtractor`; the vocabulary and special tokens
+come from the `.gguf`, so no OpenVINO tokenizer model is involved. Greedy decoding, no timestamps.
+
+### 5e. Driving `GgmlModel` directly (no GenAI)
 
 ```cpp
 #include "openvino/ggml_cgraph_loader/ggml_model.hpp"
@@ -199,11 +223,14 @@ the loader identifies each input by the op that consumes it and publishes a cano
 | `embd` | f32 | Embedding input of a `DUMP_VLM_DECODER` graph |
 | `inp_raw` | f32 | Preprocessed pixels of a vision-tower graph |
 | `cache_*` | f16 | KV caches; zeroed at load, persist across `compute()` calls |
+| `mel` | f32 | Whisper encoder input, `[n_mels][2 * n_audio_ctx]` log-mel frames |
+| `embd`, `position`, `KQ_mask`, `inp_kv_idx` | i32, i32, f32, i64 | Whisper decoder inputs (llama.cpp-independent names, kept as whisper.cpp names them); `KQ_mask` is f32 `0` / `-inf` |
 
 `input_names()` lists what a given artifact actually has; `write_input` returns `false` for an
 absent name. Other accessors: `context_size()`, `output_size()`/`read_output()` (all rows, e.g. a
 vision projector), `input_nbytes()`/`read_input()` (copy KV state between models),
-`weight_nbytes()`/`read_weight()` (raw `.gguf` tensor rows), `gguf_meta_i32()`/`gguf_meta_f32_array()`.
+`weight_nbytes()`/`read_weight()` (raw `.gguf` tensor rows), `gguf_meta_i32()`/`gguf_meta_f32_array()`/
+`gguf_meta_i32_array()`/`gguf_meta_u8_array()`/`gguf_meta_str_array()`.
 
 ## 6. Limitations and known issues
 
@@ -217,6 +244,9 @@ vision projector), `input_nbytes()`/`read_input()` (copy KV state between models
   tokens. Output is correct either way.
 - **VLM:** one image, single tile, no multi-turn KV retention. The prompt is built to SmolVLM's
   template shape rather than rendered from the model's Jinja template.
+- **Whisper:** greedy decoding without timestamps; audio over 30 s is split into consecutive 30 s
+  windows with no timestamp-driven seeking, so a word straddling a boundary can be lost.
+  `initial_prompt`, `hotwords`, word timestamps are not implemented.
 - **Not supported:** continuous batching, beam search, LoRA, paged KV cache.
 - **Library path:** with an installed ggml (`-Dggml_DIR`), the loader has no runpath to it; set
   `LD_LIBRARY_PATH` as in section 5.
@@ -234,6 +264,7 @@ built against it.
 | `GgmlModel` directly, greedy | Qwen3-0.6B Q4_0 | Coherent ("…is Paris…") |
 | `GgmlPipeline`, `{1}` vs `{1,4,8}` buckets | Llama-3.2-1B-Instruct Q4_0 | Identical text |
 | `GgmlVLMPipeline`, real photo | SmolVLM-256M-Instruct F16 | "There is a black dog in the image." |
+| `GgmlWhisperPipeline`, `samples/jfk.wav` (2026-10-06, CPU and `Vulkan0`) | whisper.cpp ggml-base (multilingual) | "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country." — identical to `whisper-cli`; language auto-detected `en`; CPU encoder output bit-exact with whisper.cpp |
 
 Freshly dumped artifacts were byte-identical to earlier dumps, and every output matched the
 previous development build exactly.

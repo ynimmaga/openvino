@@ -101,6 +101,11 @@ public:
     /// clip.vision.image_size / image_mean / image_std, needed to reimplement preprocessing).
     bool gguf_meta_i32(const std::string& key, int32_t& out) const;
     bool gguf_meta_f32_array(const std::string& key, std::vector<float>& out) const;
+    /// Integer / raw byte / string arrays, e.g. a whisper model's vocabulary (whisper.vocab.bytes
+    /// + whisper.vocab.offsets) and language codes (whisper.languages).
+    bool gguf_meta_i32_array(const std::string& key, std::vector<int32_t>& out) const;
+    bool gguf_meta_u8_array(const std::string& key, std::vector<uint8_t>& out) const;
+    bool gguf_meta_str_array(const std::string& key, std::vector<std::string>& out) const;
 
     /// The logits tensor produced by the last graph node.
     ggml_tensor* logits() const;

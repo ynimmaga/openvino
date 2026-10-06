@@ -133,6 +133,61 @@ bool GgmlModel::gguf_meta_f32_array(const std::string& key, std::vector<float>& 
     return true;
 }
 
+namespace {
+
+// Raw element data of a GGUF array of exactly `type`, or nullptr.
+const void* gguf_array(gguf_context* gg, const std::string& key, gguf_type type, size_t& n) {
+    if (!gg) {
+        return nullptr;
+    }
+    const int64_t id = gguf_find_key(gg, key.c_str());
+    if (id < 0 || gguf_get_kv_type(gg, id) != GGUF_TYPE_ARRAY || gguf_get_arr_type(gg, id) != type) {
+        return nullptr;
+    }
+    n = gguf_get_arr_n(gg, id);
+    return gguf_get_arr_data(gg, id);
+}
+
+}  // namespace
+
+bool GgmlModel::gguf_meta_i32_array(const std::string& key, std::vector<int32_t>& out) const {
+    size_t n = 0;
+    const auto* data = static_cast<const int32_t*>(gguf_array(m_impl->gg, key, GGUF_TYPE_INT32, n));
+    if (!data) {
+        return false;
+    }
+    out.assign(data, data + n);
+    return true;
+}
+
+bool GgmlModel::gguf_meta_u8_array(const std::string& key, std::vector<uint8_t>& out) const {
+    size_t n = 0;
+    const auto* data = static_cast<const uint8_t*>(gguf_array(m_impl->gg, key, GGUF_TYPE_UINT8, n));
+    if (!data) {
+        return false;
+    }
+    out.assign(data, data + n);
+    return true;
+}
+
+bool GgmlModel::gguf_meta_str_array(const std::string& key, std::vector<std::string>& out) const {
+    if (!m_impl->gg) {
+        return false;
+    }
+    const int64_t id = gguf_find_key(m_impl->gg, key.c_str());
+    if (id < 0 || gguf_get_kv_type(m_impl->gg, id) != GGUF_TYPE_ARRAY ||
+        gguf_get_arr_type(m_impl->gg, id) != GGUF_TYPE_STRING) {
+        return false;
+    }
+    const size_t n = gguf_get_arr_n(m_impl->gg, id);
+    out.clear();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        out.emplace_back(gguf_get_arr_str(m_impl->gg, id, i));
+    }
+    return true;
+}
+
 ggml_tensor* GgmlModel::logits() const {
     return m_impl->out.last;
 }

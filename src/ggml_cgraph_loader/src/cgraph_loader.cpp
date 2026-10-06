@@ -233,9 +233,13 @@ struct Loader {
             const std::string op = n["op"];
             ggml_tensor* t = nullptr;
 
-            // SET_ROWS also carries a view_src (its destination), but it is a real op, so the
-            // view shortcut must not swallow it.
-            if (n.contains("view_src") && op != "GGML_OP_SET_ROWS") {
+            // Only the metadata-only ops take the view shortcut. Real ops can carry a view_src
+            // too -- SET_ROWS and CPY both return a view of their destination -- and rebuilding
+            // those as a bare view silently drops the write (whisper stores its cross-attention
+            // K/V with CPY).
+            const bool metadata_only = op == "GGML_OP_VIEW" || op == "GGML_OP_RESHAPE" ||
+                                       op == "GGML_OP_PERMUTE" || op == "GGML_OP_TRANSPOSE";
+            if (metadata_only && n.contains("view_src")) {
                 t = rebuild_view(n);
             } else {
                 t = build_node(n);
@@ -294,11 +298,18 @@ struct Loader {
             } else if (op == "GGML_OP_FLASH_ATTN_EXT") {
                 tag(3, "self_kq_mask");
             } else if (op == "GGML_OP_GET_ROWS") {
-                // The first GET_ROWS over the token embedding takes the tokens; a later one
-                // selects which rows to emit logits for.
+                // The first GET_ROWS over a weight (the token embedding) takes the tokens; one
+                // over activations selects which rows to emit logits for. Other lookups into
+                // weights (e.g. whisper's learned positional embedding) get no canonical name and
+                // stay reachable under their own leaf name.
                 const std::string id = ins[1];
+                const bool from_weight = doc["weights"].contains(ins[0].get<std::string>());
                 if (by_id.count(id) && !role.count(id)) {
-                    role[id] = n_getrows++ == 0 ? "inp_tokens" : "inp_out_ids";
+                    if (!from_weight) {
+                        role[id] = "inp_out_ids";
+                    } else if (n_getrows++ == 0) {
+                        role[id] = "inp_tokens";
+                    }
                 }
             }
         }
