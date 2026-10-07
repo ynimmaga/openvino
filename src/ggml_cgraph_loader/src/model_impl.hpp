@@ -50,6 +50,8 @@ struct GgmlModel::Impl {
     ggml_cgraph* gf = nullptr;
     std::map<std::string, ggml_tensor*> wmap;  // gguf tensor name -> uploaded weight
     size_t n_kv = 0;  // baked into the graph shapes; 0 when unknown
+    /// Inputs whose value the artifact carries; written once after allocation.
+    std::vector<std::pair<ggml_tensor*, std::vector<uint8_t>>> constants;
     Out out;
 
     ~Impl() {
@@ -130,6 +132,10 @@ struct GgmlModel::Impl {
         }
         alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
         OPENVINO_ASSERT(ggml_gallocr_alloc_graph(alloc, gf), "[GGML] graph allocation failed");
+
+        for (const auto& c : constants) {
+            ggml_backend_tensor_set(c.first, c.second.data(), 0, c.second.size());
+        }
 
         // KV caches live in ctx_ext, so they are allocated once and persist across compute()
         // calls; SET_ROWS writes through a view into that same buffer.

@@ -68,6 +68,32 @@ int32_t i_param(const json& n, size_t i, int32_t dflt = 0) {
     return n["op_params"][i].get<int32_t>();
 }
 
+std::vector<uint8_t> from_base64(const std::string& in) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        return c == '+' ? 62 : c == '/' ? 63 : -1;
+    };
+    std::vector<uint8_t> out;
+    out.reserve(in.size() / 4 * 3);
+    uint32_t acc = 0;
+    int bits = 0;
+    for (char c : in) {
+        const int v = val(c);
+        if (v < 0) {
+            continue;  // '=' padding
+        }
+        acc = (acc << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((acc >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
 struct Loader {
     GgmlModel::Impl& im;
     std::map<std::string, ggml_tensor*> by_id;
@@ -103,10 +129,19 @@ struct Loader {
                                                 ne[2], ne[3]);
             const std::string name = l["name"];
             ggml_set_name(t, name.c_str());
+            by_id[id] = t;
+            // A constant input carries its value in the artifact (e.g. llama.cpp's KV-cache
+            // Hadamard rotation matrices): uploaded once in finalize(), not a caller input.
+            if (l.contains("data_b64")) {
+                auto data = from_base64(l["data_b64"].get<std::string>());
+                OPENVINO_ASSERT(data.size() == ggml_nbytes(t), "[GGML] constant input '", name, "' has ",
+                                data.size(), " bytes, expected ", ggml_nbytes(t));
+                im.constants.emplace_back(t, std::move(data));
+                continue;
+            }
             if (l["is_input"].get<bool>()) {
                 ggml_set_input(t);
             }
-            by_id[id] = t;
             im.out.externals[name] = t;
         }
     }
@@ -136,7 +171,20 @@ struct Loader {
         if (op == "GGML_OP_GET_ROWS")  return ggml_get_rows(c, in(n, 0), in(n, 1));
         if (op == "GGML_OP_MUL")       return ggml_mul(c, in(n, 0), in(n, 1));
         if (op == "GGML_OP_ADD")       return ggml_add(c, in(n, 0), in(n, 1));
-        if (op == "GGML_OP_MUL_MAT")   return ggml_mul_mat(c, in(n, 0), in(n, 1));
+        if (op == "GGML_OP_MUL_MAT") {
+            // op_params: [0] precision, [1] hint. The hint matters: llama.cpp marks its quantized-KV
+            // Hadamard rotations SRC0_IS_HADAMARD, which backends run as a fast Walsh-Hadamard
+            // transform. That is the same math but rounds differently from a dense matmul, enough to
+            // move values across quantization steps once they are stored in a q8_0/q4_0 cache.
+            ggml_tensor* r = ggml_mul_mat(c, in(n, 0), in(n, 1));
+            if (const int32_t prec = i_param(n, 0)) {
+                ggml_mul_mat_set_prec(r, static_cast<ggml_prec>(prec));
+            }
+            if (const int32_t hint = i_param(n, 1)) {
+                ggml_mul_mat_set_hint(r, static_cast<ggml_op_hint>(hint));
+            }
+            return r;
+        }
         if (op == "GGML_OP_RMS_NORM")  return ggml_rms_norm(c, in(n, 0), f_param(n, 0, 1e-5f));
         if (op == "GGML_OP_SCALE")     return ggml_scale_bias(c, in(n, 0), f_param(n, 0, 1.0f),
                                                               f_param(n, 1));
