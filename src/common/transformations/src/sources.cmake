@@ -81,6 +81,7 @@ set(COMMON_OPTIMIZATIONS_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/nonzero_horizontal_fusion.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/nop_elimination.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/normalize_l2_fusion.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/normalize_vllm_rope.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/optimize_strided_slice.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/pack_multi_head_attention.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/common_optimizations/pad_fusion.cpp
@@ -288,6 +289,7 @@ set(SMART_RESHAPE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/proposal_scales_stridedslice.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/reshape_sinking.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/reshape_to_1D.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/restore_traced_batch.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/shape_of_const_folding.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/smart_reshape.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/smart_reshape/strided_slice_squeeze.cpp
