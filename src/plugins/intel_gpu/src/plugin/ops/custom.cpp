@@ -275,4 +275,45 @@ void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, Cust
     }
 }
 
+void CreateExternalOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op) {
+    auto callback = op->get_rt_info().at(ov::intel_gpu::external_op_rt_info_key)
+                        .as<std::shared_ptr<ov::intel_gpu::ExternalOpCallback>>();
+    OPENVINO_ASSERT(callback, "[GPU] external op ", op->get_friendly_name(), " has a null callback");
+
+    // Plain (default-format) inputs and outputs: the external kernel addresses rows by pointer
+    // arithmetic, so blocked layouts are reordered away.
+    std::vector<cldnn::input_info> inputs;
+    for (const auto& in : p.GetInputInfo(op)) {
+        inputs.push_back(in);
+    }
+    for (size_t i = 0; i < inputs.size(); i++) {
+        const auto fmt = cldnn::format::get_default_format(op->get_input_partial_shape(i).size());
+        const auto name = inputs[i].pid + "_" + op->get_friendly_name() + "_" + std::to_string(i) +
+                          ProgramBuilder::m_preCustomLayerTag;
+        p.add_primitive(*op, cldnn::reorder(name, inputs[i], fmt,
+                                            cldnn::element_type_to_data_type(op->get_input_element_type(i))));
+        inputs[i] = cldnn::input_info(name);
+    }
+
+    std::vector<cldnn::layout> output_layouts;
+    for (size_t i = 0; i < op->get_output_size(); i++) {
+        const auto& ps = op->get_output_partial_shape(i);
+        output_layouts.emplace_back(ps, cldnn::element_type_to_data_type(op->get_output_element_type(i)),
+                                    cldnn::format::get_default_format(ps.size()));
+    }
+
+    // Shape inference for dynamic inputs re-runs the op itself (see custom_gpu_primitive_inst), so
+    // keep a clone detached from the original model.
+    ov::OutputVector new_inputs;
+    for (size_t i = 0; i < op->get_input_size(); i++) {
+        new_inputs.emplace_back(
+            std::make_shared<ov::op::v0::Parameter>(op->get_input_element_type(i), op->get_input_partial_shape(i)));
+    }
+    std::shared_ptr<ov::Node> op_bk = op->clone_with_new_inputs(new_inputs);
+
+    auto prim = cldnn::custom_gpu_primitive(layer_type_name_ID(op), inputs, {}, op->get_type_name(), {}, "",
+                                            output_layouts, {1}, {1}, op_bk, -1, {}, {}, callback);
+    p.add_primitive(*op, prim);
+}
+
 }  // namespace ov::intel_gpu

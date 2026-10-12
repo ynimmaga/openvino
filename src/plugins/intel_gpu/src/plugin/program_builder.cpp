@@ -11,6 +11,7 @@
 #include "openvino/op/lstm_sequence.hpp"
 #include "openvino/op/loop.hpp"
 #include "openvino/runtime/properties.hpp"
+#include "openvino/runtime/intel_gpu/external_op.hpp"
 
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
@@ -207,6 +208,11 @@ void ProgramBuilder::CreateSingleLayerPrimitive(const std::shared_ptr<ov::Node>&
     OV_ITT_SCOPED_TASK(itt::domains::intel_gpu_plugin, "ProgramBuilder::CreateSingleLayerPrimitive");
     GPU_DEBUG_LOG << "Process " << "op::" << op->get_type_info().version_id << "::" << op->get_type_name() << " operation "
                   << "(friendly_name=" << op->get_friendly_name() << ")" << std::endl;
+
+    if (op->get_rt_info().count(ov::intel_gpu::external_op_rt_info_key)) {
+        CreateExternalOp(*this, op);
+        return;
+    }
 
     bool is_created = false;
     const ov::NodeTypeInfo* op_type_info = &op->get_type_info();

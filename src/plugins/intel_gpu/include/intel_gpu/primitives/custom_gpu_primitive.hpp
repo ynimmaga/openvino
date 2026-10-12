@@ -3,6 +3,7 @@
 //
 
 #pragma once
+#include "openvino/runtime/intel_gpu/external_op.hpp"
 #include "primitive.hpp"
 #include "intel_gpu/runtime/memory.hpp"
 #include "intel_gpu/plugin/simple_math.hpp"
@@ -119,7 +120,8 @@ struct custom_gpu_primitive : public primitive_base<custom_gpu_primitive> {
                          const std::shared_ptr<ov::Node>& op = nullptr,
                          const int calcWgDimInputIdx = -1,
                          const std::vector<std::string> globalSizeRules = {},
-                         const std::vector<std::string> localSizeRules = {})
+                         const std::vector<std::string> localSizeRules = {},
+                         std::shared_ptr<ov::intel_gpu::ExternalOpCallback> external_op = nullptr)
         : primitive_base(id, inputs, output_layouts.size(), {optional_data_type()}, {output_layouts[0].data_padding}),
           kernel_entry_point(kernel_entry_point),
           kernel_arguments(kernel_arguments),
@@ -131,7 +133,8 @@ struct custom_gpu_primitive : public primitive_base<custom_gpu_primitive> {
           op(op),
           calcWgDimInputIdx(calcWgDimInputIdx),
           globalSizeRules(globalSizeRules),
-          localSizeRules(localSizeRules) {}
+          localSizeRules(localSizeRules),
+          external_op(std::move(external_op)) {}
 
     /// @brief The name of the entry point function in the kernel
     const std::string kernel_entry_point;
@@ -154,6 +157,9 @@ struct custom_gpu_primitive : public primitive_base<custom_gpu_primitive> {
     /// @brief Custom provided rules for calc work sizes.
     const std::vector<std::string> globalSizeRules;
     const std::vector<std::string> localSizeRules;
+    /// Set for an op lowered by the application (see external_op.hpp): no OpenCL kernel is built;
+    /// the impl hands the plugin's queue and buffers to this callback instead.
+    const std::shared_ptr<ov::intel_gpu::ExternalOpCallback> external_op;
 
     size_t hash() const override {
         size_t seed = primitive::hash();

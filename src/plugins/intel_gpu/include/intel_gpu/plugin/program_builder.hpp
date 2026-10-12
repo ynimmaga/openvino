@@ -175,6 +175,8 @@ private:
 };
 
 void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& node, CustomLayerPtr customLayer);
+// EXPERIMENTAL: an op the application lowers itself (rt_info[ov::intel_gpu::external_op_rt_info_key]).
+void CreateExternalOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& node);
 void CreateUnaryEltwiseOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& node,
                           cldnn::activation_func func, cldnn::activation_additional_params params);
 void CreateElementwiseOp(ProgramBuilder& p,

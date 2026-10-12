@@ -206,6 +206,60 @@ struct custom_gpu_primitive_impl : typed_primitive_impl<custom_gpu_primitive> {
     }
 };
 
+// An op the application lowers itself (custom_gpu_primitive::external_op): no kernel is built; at
+// execution the callback appends its own work to the plugin's in-order queue. Everything enqueued
+// earlier is ordered before it by that queue, and the marker returned here orders what follows.
+struct external_op_impl : typed_primitive_impl<custom_gpu_primitive> {
+    using parent = typed_primitive_impl<custom_gpu_primitive>;
+
+    std::shared_ptr<ov::intel_gpu::ExternalOpCallback> callback;
+
+    explicit external_op_impl(std::shared_ptr<ov::intel_gpu::ExternalOpCallback> cb)
+        : parent("external_op"), callback(std::move(cb)) {}
+
+    bool is_cpu() const override { return false; }
+    // Not serializable (the callback lives in the application), so no DECLARE_OBJECT_TYPE_SERIALIZATION.
+    const std::string& get_type_info() const override {
+        static const std::string type = "cldnn::ocl::external_op_impl";
+        return type;
+    }
+    void init_kernels(const kernels_cache&, const kernel_impl_params&) override {}
+    std::unique_ptr<primitive_impl> clone() const override { return std::make_unique<external_op_impl>(*this); }
+    std::vector<std::shared_ptr<cldnn::kernel_string>> get_kernels_source() override { return {}; }
+    std::vector<kernel::ptr> get_kernels() const override { return {}; }
+    void set_arguments_impl(custom_gpu_primitive_inst&) override {}
+
+    // Planar layouts only; padding (e.g. a slice kept in place) is described by strides and an offset
+    // first-element pointer instead of being copied away.
+    // The layout comes from the node, not the memory: with dynamic shapes the memory may be a larger
+    // pooled allocation whose own layout does not describe this execution.
+    static ov::intel_gpu::ExternalOpTensor to_tensor(const memory::ptr& mem, const layout& l) {
+        const auto shape = l.get_shape();
+        OPENVINO_ASSERT(l.format == format::get_default_format(l.format.dimension()),
+                        "[GPU] external op buffers must be in a planar format, got ", l.format.to_string());
+        const auto pitches = l.get_pitches();
+        std::vector<int64_t> strides(pitches.begin(), pitches.begin() + shape.size());
+        const auto type = ov::element::Type(l.data_type);
+        auto* first = static_cast<uint8_t*>(mem->buffer_ptr()) + l.get_linear_offset() * type.size();
+        return {first, type, shape, strides};
+    }
+
+    event::ptr execute_impl(const std::vector<event::ptr>& events, custom_gpu_primitive_inst& instance) override {
+        auto& stream = instance.get_network().get_stream();
+        void* queue = stream.get_native_handle();
+        OPENVINO_ASSERT(queue, "[GPU] external op needs a runtime that exposes its native queue (Level Zero)");
+        std::vector<ov::intel_gpu::ExternalOpTensor> inputs, outputs;
+        for (const auto& dep : instance.dependencies()) {
+            inputs.push_back(to_tensor(dep.first->output_memory_ptr(dep.second), dep.first->get_output_layout(dep.second)));
+        }
+        for (size_t i = 0; i < instance.outputs_memory_count(); i++) {
+            outputs.push_back(to_tensor(instance.output_memory_ptr(i), instance.get_output_layout(i)));
+        }
+        callback->enqueue(queue, inputs, outputs);
+        return stream.enqueue_marker({}, instance.is_output());
+    }
+};
+
 static kernel_selector::kernel_argument_element get_arg(custom_gpu_primitive::arg_desc arg) {
     kernel_selector::kernel_argument_element ret;
     switch (arg.type) {
@@ -343,6 +397,9 @@ static std::string get_jit_constant(const custom_gpu_primitive_node& outer,
 
 static std::unique_ptr<primitive_impl> create(const custom_gpu_primitive_node& arg, const kernel_impl_params& impl_param) {
     const auto* const primitive = arg.get_primitive().get();
+    if (primitive->external_op) {
+        return std::make_unique<external_op_impl>(primitive->external_op);
+    }
 
     const auto& orig_output_layout = impl_param.get_output_layout();
     OPENVINO_ASSERT(orig_output_layout.is_static(), "out layouts should be static for create primitive_impl!");

@@ -75,10 +75,9 @@ public:
     virtual event::ptr aggregate_events(const std::vector<event::ptr>& events, bool group = false, bool is_output = false);
 
     QueueTypes get_queue_type() const { return m_queue_type; }
-#ifdef ENABLE_MLIR_FOR_GPU
-    // Returns the handle to the underlying stream object (e.g. cl_command_queue for OpenCL)
+    // Returns the handle to the underlying stream object (e.g. cl_command_queue for OpenCL,
+    // ze_command_list_handle_t for Level Zero). Used by MLIR kernels and external ops.
     virtual void* get_native_handle() const { return nullptr; }
-#endif
     SyncMethods get_sync_method() const { return m_sync_method; }
 
     static SyncMethods get_expected_sync_method(const ExecutionConfig& config);

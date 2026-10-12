@@ -18,6 +18,7 @@ namespace ze {
 class ze_stream : public stream {
 public:
     ze_command_list_handle_t get_queue() const { return m_cmd_list.handle(); }
+    void* get_native_handle() const override { return static_cast<void*>(m_cmd_list.handle()); }
     const ze_engine& get_engine() const { return _engine; }
 
     ze_stream(const ze_engine& engine, const ExecutionConfig& config);
