@@ -44,7 +44,25 @@ public:
     static std::shared_ptr<GgmlModel> from_cgraph(const std::string& cgraph_json,
                                                   const std::string& gguf_path,
                                                   const std::string& backend_name = "");
+    /// Another graph over the same model -- e.g. a different token count or context size -- reusing
+    /// `base`'s backend, uploaded weights and KV caches. A "cache_*" leaf of matching name and type
+    /// binds to base's cache, or to a view of its first slots when this graph was dumped for a
+    /// smaller n_kv (slots are rows of the cache, [row, n_kv]). The graphs then read and write one
+    /// cache with no copying, and the weights are held once.
+    static std::shared_ptr<GgmlModel> from_cgraph(const std::string& cgraph_json,
+                                                  const std::shared_ptr<GgmlModel>& base);
+
     ~GgmlModel();
+
+    /// Copy `n` KV cache slots from `src` to `dst` in every "cache_*" tensor whose second dimension
+    /// is the slot axis (llama.cpp's K/V layout, [row, n_kv]). Used to fork a sequence's KV.
+    void copy_cache_slots(size_t src, size_t dst, size_t n);
+
+    /// Named results besides the last node: nodes the artifact flags "is_output" (e.g. whisper's
+    /// cross-attention scores). They are kept intact through compute(); f32 only.
+    std::vector<std::string> output_names() const;
+    size_t named_output_size(const std::string& name) const;
+    bool read_named_output(const std::string& name, float* dst) const;
 
     /// KV slots the graph was built for. 0 if the source did not record it.
     size_t context_size() const;

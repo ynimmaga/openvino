@@ -9,6 +9,9 @@
 
 #include "openvino/ggml_cgraph_loader/ggml_model.hpp"
 
+#include <algorithm>
+#include <vector>
+
 #include "model_impl.hpp"
 
 namespace ov {
@@ -202,6 +205,42 @@ size_t GgmlModel::node_count() const {
 
 std::string GgmlModel::backend_name() const {
     return ggml_backend_name(m_impl->backend);
+}
+
+std::vector<std::string> GgmlModel::output_names() const {
+    std::vector<std::string> names;
+    for (const auto& kv : m_impl->out.named_outputs) {
+        names.push_back(kv.first);
+    }
+    return names;
+}
+
+size_t GgmlModel::named_output_size(const std::string& name) const {
+    auto it = m_impl->out.named_outputs.find(name);
+    return it == m_impl->out.named_outputs.end() ? 0 : ggml_nelements(it->second);
+}
+
+bool GgmlModel::read_named_output(const std::string& name, float* dst) const {
+    auto it = m_impl->out.named_outputs.find(name);
+    if (it == m_impl->out.named_outputs.end() || it->second->type != GGML_TYPE_F32) {
+        return false;
+    }
+    ggml_backend_tensor_get(it->second, dst, 0, ggml_nbytes(it->second));
+    return true;
+}
+
+void GgmlModel::copy_cache_slots(size_t src, size_t dst, size_t n) {
+    std::vector<uint8_t> rows;
+    for (const auto& kv : m_impl->out.externals) {
+        ggml_tensor* t = kv.second;
+        if (kv.first.rfind("cache_", 0) != 0 || static_cast<size_t>(t->ne[1]) < std::max(src, dst) + n) {
+            continue;
+        }
+        const size_t row = t->nb[1];
+        rows.resize(n * row);
+        ggml_backend_tensor_get(t, rows.data(), src * row, rows.size());
+        ggml_backend_tensor_set(t, rows.data(), dst * row, rows.size());
+    }
 }
 
 }  // namespace ggml_cgraph_loader

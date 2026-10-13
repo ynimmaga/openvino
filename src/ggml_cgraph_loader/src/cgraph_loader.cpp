@@ -21,7 +21,9 @@
 // SHAPE-STATIC: the artifact records n_tokens and n_kv because they are baked into every node's
 // dimensions. A mismatch is rejected rather than silently producing nonsense.
 
+#include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <string>
@@ -98,8 +100,33 @@ struct Loader {
     GgmlModel::Impl& im;
     std::map<std::string, ggml_tensor*> by_id;
 
+    // The base model's KV cache of this name if this graph is built over one: the cache itself,
+    // or a view of its first ne[1] slots for a graph dumped with a smaller n_kv.
+    ggml_tensor* base_cache(const std::string& name, ggml_type type, const std::vector<int64_t>& ne) const {
+        if (!im.base || name.rfind("cache_", 0) != 0) {
+            return nullptr;
+        }
+        const auto& ext = im.base->externals();
+        auto it = ext.find(name);
+        if (it == ext.end() || it->second->type != type) {
+            return nullptr;
+        }
+        ggml_tensor* c = it->second;
+        if (c->ne[0] != ne[0] || c->ne[2] != ne[2] || c->ne[3] != ne[3] || c->ne[1] < ne[1]) {
+            return nullptr;
+        }
+        if (c->ne[1] == ne[1]) {
+            return c;
+        }
+        return ggml_view_4d(im.ctx_g, c, ne[0], ne[1], ne[2], ne[3], c->nb[1], c->nb[2], c->nb[3], 0);
+    }
+
     ggml_tensor* get(const std::string& id) const {
         auto it = by_id.find(id);
+        if (it == by_id.end() && !im.out.unsupported.empty()) {
+            // The id belongs to a node skipped as untranslatable; name the ops instead.
+            im.throw_if_unsupported();
+        }
         OPENVINO_ASSERT(it != by_id.end(), "[GGML] artifact references unknown tensor id: ", id);
         return it->second;
     }
@@ -125,9 +152,15 @@ struct Loader {
                 continue;
             }
             const auto ne = l["ne"].get<std::vector<int64_t>>();
+            const std::string name = l["name"];
+            if (ggml_tensor* shared = base_cache(name, type_from_name(l["type"]), ne)) {
+                by_id[id] = shared;
+                im.shared_caches.insert(shared);
+                im.out.externals[name] = shared;
+                continue;
+            }
             ggml_tensor* t = ggml_new_tensor_4d(im.ctx_ext, type_from_name(l["type"]), ne[0], ne[1],
                                                 ne[2], ne[3]);
-            const std::string name = l["name"];
             ggml_set_name(t, name.c_str());
             by_id[id] = t;
             // A constant input carries its value in the artifact (e.g. llama.cpp's KV-cache
@@ -196,6 +229,13 @@ struct Loader {
             return ggml_cont_4d(c, in(n, 0), ne[0], ne[1], ne[2], ne[3]);
         }
         if (op == "GGML_OP_SILU")      return ggml_silu(c, in(n, 0));
+        // Vision towers prepend a class embedding to the patch embeddings. op_params[0] = dim.
+        if (op == "GGML_OP_CONCAT")    return ggml_concat(c, in(n, 0), in(n, 1), i_param(n, 0));
+        if (op == "GGML_OP_REPEAT") {
+            // ggml_repeat keeps only its source; the target shape is the recorded output shape.
+            const auto ne = n["ne"].get<std::vector<int64_t>>();
+            return ggml_repeat_4d(c, in(n, 0), ne[0], ne[1], ne[2], ne[3]);
+        }
         // Vision towers: the patch embedding is a convolution, which ggml expresses as
         // im2col + mul_mat. src0 is the kernel, src1 the image.
         if (op == "GGML_OP_IM2COL") {
@@ -254,10 +294,20 @@ struct Loader {
             return b ? ggml_swiglu_split(c, a, b) : ggml_swiglu(c, a);
         }
         if (op == "GGML_OP_ROPE") {
-            // params: [1]=n_dims [2]=mode [4]=n_ctx_orig, floats at [5..10].
-            return ggml_rope_ext(c, in(n, 0), in(n, 1),
-                                 n["inputs"].size() > 2 ? in(n, 2) : nullptr,
-                                 i_param(n, 1), i_param(n, 2), i_param(n, 4),
+            // params: [1]=n_dims [2]=mode [4]=n_ctx_orig, floats at [5..10], M-RoPE sections [11..14].
+            const int mode = i_param(n, 2);
+            ggml_tensor* freq = n["inputs"].size() > 2 ? in(n, 2) : nullptr;
+            if (mode & GGML_ROPE_TYPE_MROPE) {  // MROPE, IMROPE and VISION all carry this bit
+                int sections[GGML_MROPE_SECTIONS];
+                for (int k = 0; k < GGML_MROPE_SECTIONS; k++) {
+                    sections[k] = i_param(n, 11 + k);
+                }
+                return ggml_rope_multi(c, in(n, 0), in(n, 1), freq, i_param(n, 1), sections, mode, i_param(n, 4),
+                                       f_param(n, 5, 10000.0f), f_param(n, 6, 1.0f), f_param(n, 7),
+                                       f_param(n, 8, 1.0f), f_param(n, 9, 32.0f), f_param(n, 10, 1.0f));
+            }
+            return ggml_rope_ext(c, in(n, 0), in(n, 1), freq,
+                                 i_param(n, 1), mode, i_param(n, 4),
                                  f_param(n, 5, 10000.0f), f_param(n, 6, 1.0f), f_param(n, 7),
                                  f_param(n, 8, 1.0f), f_param(n, 9, 32.0f), f_param(n, 10, 1.0f));
         }
@@ -270,7 +320,116 @@ struct Loader {
             // The dumped graph records FA's output type; llama.cpp sets it explicitly and the
             // default does not always match.
             ggml_flash_attn_ext_set_prec(r, GGML_PREC_F32);
+            if (n["inputs"].size() > 4) {
+                ggml_flash_attn_ext_add_sinks(r, in(n, 4));  // per-head attention sinks (gpt-oss)
+            }
             return r;
+        }
+        return build_more(n, op, c);
+    }
+
+    // Ops beyond the core decoder set: elementwise math, MoE routing, normalization variants,
+    // padding/shape utilities and the recurrent (SSM / RWKV / linear attention) kernels. Parameters
+    // are read from op_params exactly where ggml.c stores them.
+    ggml_tensor* build_more(const json& n, const std::string& op, ggml_context* c) {
+        const size_t n_in = n["inputs"].size();
+        auto ne = [&](int d) {
+            return n["ne"][d].get<int64_t>();
+        };
+        // elementwise
+        if (op == "GGML_OP_SUB")       return ggml_sub(c, in(n, 0), in(n, 1));
+        if (op == "GGML_OP_DIV")       return ggml_div(c, in(n, 0), in(n, 1));
+        if (op == "GGML_OP_SQR")       return ggml_sqr(c, in(n, 0));
+        if (op == "GGML_OP_SQRT")      return ggml_sqrt(c, in(n, 0));
+        if (op == "GGML_OP_LOG")       return ggml_log(c, in(n, 0));
+        if (op == "GGML_OP_SIN")       return ggml_sin(c, in(n, 0));
+        if (op == "GGML_OP_COS")       return ggml_cos(c, in(n, 0));
+        if (op == "GGML_OP_DUP")       return ggml_dup(c, in(n, 0));
+        if (op == "GGML_OP_CLAMP")     return ggml_clamp(c, in(n, 0), f_param(n, 0), f_param(n, 1));
+        if (op == "GGML_OP_LEAKY_RELU") return ggml_leaky_relu(c, in(n, 0), f_param(n, 0), false);
+        if (op == "GGML_OP_ADD_ID")    return ggml_add_id(c, in(n, 0), in(n, 1), in(n, 2));
+        // reductions / indexing
+        if (op == "GGML_OP_SUM")       return ggml_sum(c, in(n, 0));
+        if (op == "GGML_OP_SUM_ROWS")  return ggml_sum_rows(c, in(n, 0));
+        if (op == "GGML_OP_MEAN")      return ggml_mean(c, in(n, 0));
+        if (op == "GGML_OP_ARGMAX")    return ggml_argmax(c, in(n, 0));
+        if (op == "GGML_OP_CUMSUM")    return ggml_cumsum(c, in(n, 0));
+        if (op == "GGML_OP_ARGSORT")   return ggml_argsort(c, in(n, 0), static_cast<ggml_sort_order>(i_param(n, 0)));
+        if (op == "GGML_OP_TOP_K")     return ggml_top_k(c, in(n, 0), static_cast<int>(ne(0)));
+        if (op == "GGML_OP_MUL_MAT_ID") return ggml_mul_mat_id(c, in(n, 0), in(n, 1), in(n, 2));
+        // normalization
+        if (op == "GGML_OP_L2_NORM")   return ggml_l2_norm(c, in(n, 0), f_param(n, 0));
+        if (op == "GGML_OP_GROUP_NORM") return ggml_group_norm(c, in(n, 0), i_param(n, 0), f_param(n, 1));
+        // shape / layout
+        if (op == "GGML_OP_PAD") {
+            return ggml_pad_ext(c, in(n, 0), i_param(n, 0), i_param(n, 1), i_param(n, 2), i_param(n, 3),
+                                i_param(n, 4), i_param(n, 5), i_param(n, 6), i_param(n, 7));
+        }
+        if (op == "GGML_OP_ROLL") {
+            return ggml_roll(c, in(n, 0), i_param(n, 0), i_param(n, 1), i_param(n, 2), i_param(n, 3));
+        }
+        if (op == "GGML_OP_DIAG_MASK_INF") return ggml_diag_mask_inf(c, in(n, 0), i_param(n, 0));
+        if (op == "GGML_OP_TRI")       return ggml_tri(c, in(n, 0), static_cast<ggml_tri_type>(i_param(n, 0)));
+        if (op == "GGML_OP_FILL")      return ggml_fill(c, in(n, 0), f_param(n, 0));
+        if (op == "GGML_OP_SOLVE_TRI") return ggml_solve_tri(c, in(n, 0), in(n, 1), true, true, false);
+        if (op == "GGML_OP_SET") {
+            return ggml_set(c, in(n, 0), in(n, 1), i_param(n, 0), i_param(n, 1), i_param(n, 2), i_param(n, 3));
+        }
+        if (op == "GGML_OP_ACC") {
+            return ggml_acc(c, in(n, 0), in(n, 1), i_param(n, 0), i_param(n, 1), i_param(n, 2), i_param(n, 3));
+        }
+        // recurrent kernels
+        if (op == "GGML_OP_SSM_CONV")  return ggml_ssm_conv(c, in(n, 0), in(n, 1));
+        if (op == "GGML_OP_SSM_SCAN") {
+            // op_params[0] = K, the number of states kept per sequence
+            return ggml_ssm_scan(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), in(n, 5), in(n, 6),
+                                 std::max(1, i_param(n, 0)));
+        }
+        if (op == "GGML_OP_RWKV_WKV6") {
+            return ggml_rwkv_wkv6(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), in(n, 5));
+        }
+        if (op == "GGML_OP_RWKV_WKV7") {
+            return ggml_rwkv_wkv7(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), in(n, 5), in(n, 6));
+        }
+        if (op == "GGML_OP_GATED_LINEAR_ATTN") {
+            return ggml_gated_linear_attn(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), f_param(n, 0));
+        }
+        // activations not covered above: any unary op by name, xIELU with its fitted constants,
+        // and the remaining gated linear units
+        if (op.rfind("GGML_UNARY_OP_", 0) == 0) {
+            const std::string name = op.substr(std::string("GGML_UNARY_OP_").size());
+            if (name == "XIELU") {
+                // op_params hold beta + softplus(alpha_n), softplus(alpha_p), beta, eps; invert softplus.
+                const float beta = f_param(n, 3), eps = f_param(n, 4);
+                const float an = std::log(std::expm1(f_param(n, 1) - beta)), ap = std::log(std::expm1(f_param(n, 2)));
+                return ggml_xielu(c, in(n, 0), an, ap, beta, eps);
+            }
+            for (int u = 0; u < GGML_UNARY_OP_COUNT; u++) {
+                if (name == ggml_unary_op_name(static_cast<ggml_unary_op>(u))) {
+                    return ggml_unary(c, in(n, 0), static_cast<ggml_unary_op>(u));
+                }
+            }
+            return nullptr;
+        }
+        if (op.rfind("GGML_GLU_OP_", 0) == 0) {
+            const std::string name = op.substr(std::string("GGML_GLU_OP_").size());
+            const bool swapped = i_param(n, 1) != 0;
+            if (name == "SWIGLU_OAI") {
+                ggml_tensor* a = in(n, 0);
+                ggml_tensor* b = n_in > 1 ? in(n, 1) : nullptr;
+                OPENVINO_ASSERT(b, "[GGML] fused SWIGLU_OAI is not supported");
+                return ggml_swiglu_oai(c, swapped ? b : a, swapped ? a : b, f_param(n, 2), f_param(n, 3));
+            }
+            for (int g = 0; g < GGML_GLU_OP_COUNT; g++) {
+                if (name == ggml_glu_op_name(static_cast<ggml_glu_op>(g))) {
+                    const auto gop = static_cast<ggml_glu_op>(g);
+                    if (n_in > 1) {
+                        return swapped ? ggml_glu_split(c, in(n, 1), in(n, 0), gop) : ggml_glu_split(c, in(n, 0), in(n, 1), gop);
+                    }
+                    return ggml_glu(c, in(n, 0), gop, swapped);
+                }
+            }
+            return nullptr;
         }
         return nullptr;
     }
@@ -308,6 +467,10 @@ struct Loader {
             }
             const std::string name = n["name"];
             ggml_set_name(t, name.empty() ? id.c_str() : name.c_str());
+            if (n.value("is_output", false) && !name.empty()) {
+                ggml_set_output(t);  // keeps the allocator from reusing its buffer
+                im.out.named_outputs[name] = t;
+            }
             by_id[id] = t;
             im.out.map[id] = t;
             im.out.order.push_back(t);
@@ -381,22 +544,20 @@ struct Loader {
 
 }  // namespace
 
-std::shared_ptr<GgmlModel> GgmlModel::from_cgraph(const std::string& cgraph_json,
-                                                  const std::string& gguf_path,
-                                                  const std::string& backend_name) {
+namespace {
+
+json read_artifact(const std::string& cgraph_json) {
     std::ifstream f(cgraph_json);
     OPENVINO_ASSERT(f.good(), "[GGML] cannot open cgraph artifact: ", cgraph_json);
     json doc;
     f >> doc;
     OPENVINO_ASSERT(doc.value("format", "") == "ov-cgraph-v1",
                     "[GGML] unrecognised cgraph artifact format: ", doc.value("format", "<none>"));
+    return doc;
+}
 
-    std::shared_ptr<GgmlModel> model(new GgmlModel());
-    auto& im = *model->m_impl;
-    im.init_backend(backend_name);
-    im.load_weights(gguf_path);
+void build(GgmlModel::Impl& im, const json& doc) {
     im.init_contexts();
-
     im.n_kv = doc.value("n_kv", 0);
 
     Loader loader{im, {}};
@@ -405,6 +566,29 @@ std::shared_ptr<GgmlModel> GgmlModel::from_cgraph(const std::string& cgraph_json
     im.throw_if_unsupported();
     loader.assign_roles(doc);
     im.finalize();
+}
+
+}  // namespace
+
+std::shared_ptr<GgmlModel> GgmlModel::from_cgraph(const std::string& cgraph_json,
+                                                  const std::string& gguf_path,
+                                                  const std::string& backend_name) {
+    const json doc = read_artifact(cgraph_json);
+    std::shared_ptr<GgmlModel> model(new GgmlModel());
+    auto& im = *model->m_impl;
+    im.init_backend(backend_name);
+    im.load_weights(gguf_path);
+    build(im, doc);
+    return model;
+}
+
+std::shared_ptr<GgmlModel> GgmlModel::from_cgraph(const std::string& cgraph_json,
+                                                  const std::shared_ptr<GgmlModel>& base) {
+    OPENVINO_ASSERT(base, "[GGML] from_cgraph: base model is null");
+    const json doc = read_artifact(cgraph_json);
+    std::shared_ptr<GgmlModel> model(new GgmlModel());
+    model->m_impl->share_from(base, *base->m_impl);
+    build(*model->m_impl, doc);
     return model;
 }
 

@@ -30,7 +30,7 @@ constexpr int MAX_NODES = 8192;
 /// Graph outputs, owned by the caller: the producer (the Loader) is destroyed after building, so
 /// anything needed afterwards must live here.
 struct Out {
-    std::map<std::string, ggml_tensor*> map, externals;
+    std::map<std::string, ggml_tensor*> map, externals, named_outputs;
     std::set<std::string> unsupported;
     ggml_tensor* last = nullptr;
     /// Every node, in topological order. Needed because a forward expansion from the logits
@@ -53,16 +53,32 @@ struct GgmlModel::Impl {
     /// Inputs whose value the artifact carries; written once after allocation.
     std::vector<std::pair<ggml_tensor*, std::vector<uint8_t>>> constants;
     Out out;
+    /// Set when built over another model (from_cgraph(json, base)): backend, weights, gguf and the
+    /// shared caches belong to it, and this keeps it alive.
+    std::shared_ptr<GgmlModel> base;
+    std::set<ggml_tensor*> shared_caches;
 
     ~Impl() {
         if (alloc) ggml_gallocr_free(alloc);
         if (ebuf) ggml_backend_buffer_free(ebuf);
-        if (wbuf) ggml_backend_buffer_free(wbuf);
         if (ctx_ext) ggml_free(ctx_ext);
         if (ctx_g) ggml_free(ctx_g);
+        if (base) {
+            return;
+        }
+        if (wbuf) ggml_backend_buffer_free(wbuf);
         if (wctx) ggml_free(wctx);
         if (gg) gguf_free(gg);
         if (backend) ggml_backend_free(backend);
+    }
+
+    /// Take over `other`'s backend, weights and gguf metadata instead of loading them again.
+    void share_from(const std::shared_ptr<GgmlModel>& other, const Impl& o) {
+        base = other;
+        backend = o.backend;
+        wctx = o.wctx;
+        gg = o.gg;
+        wmap = o.wmap;
     }
 
     /// Pick and initialise a ggml backend. Empty name means GPU, then IGPU (Intel integrated
@@ -121,7 +137,10 @@ struct GgmlModel::Impl {
     /// caches. Shared tail of the build path.
     void finalize() {
         OPENVINO_ASSERT(out.last, "[GGML] no output tensor produced");
-        ebuf = ggml_backend_alloc_ctx_tensors(ctx_ext, backend);
+        // Every external may be shared with the base model, leaving nothing to allocate here.
+        if (ggml_get_first_tensor(ctx_ext)) {
+            ebuf = ggml_backend_alloc_ctx_tensors(ctx_ext, backend);
+        }
         gf = ggml_new_graph_custom(ctx_g, MAX_NODES, false);
         if (out.order.empty()) {
             ggml_build_forward_expand(gf, out.last);
@@ -140,7 +159,7 @@ struct GgmlModel::Impl {
         // KV caches live in ctx_ext, so they are allocated once and persist across compute()
         // calls; SET_ROWS writes through a view into that same buffer.
         for (const auto& kv : out.externals) {
-            if (kv.first.rfind("cache_", 0) != 0) {
+            if (kv.first.rfind("cache_", 0) != 0 || shared_caches.count(kv.second)) {
                 continue;
             }
             std::vector<char> z(ggml_nbytes(kv.second), 0);
