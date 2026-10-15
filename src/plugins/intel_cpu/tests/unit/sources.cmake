@@ -180,6 +180,7 @@ set(CPU_UNIT_TESTS_SRCS
 set(CPU_UNIT_TESTS_X64_SRCS
     ${CMAKE_CURRENT_LIST_DIR}/brgemm_executor_test.cpp
     ${CMAKE_CURRENT_LIST_DIR}/jit_kernel_test.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/power_emitter_test.cpp
     ${CMAKE_CURRENT_LIST_DIR}/registers_pool.cpp
     ${CMAKE_CURRENT_LIST_DIR}/softmax_kernel_test.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xattention_test.cpp
@@ -192,6 +193,7 @@ set(CPU_UNIT_TESTS_X64_SRCS
     ${CMAKE_CURRENT_LIST_DIR}/snippets_transformations/x64/lowered/buffer_allocation.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/x64/convert_matmul_test_3d_weight.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/x64/convert_to_interaction.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/transformations/x64/mlp_fusion_test.cpp
     ${CMAKE_CURRENT_LIST_DIR}/transformations/x64/qkv_proj_fusion_test.cpp
 )
 
