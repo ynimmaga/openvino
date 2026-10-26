@@ -54,9 +54,24 @@ public:
 
     ~GgmlModel();
 
+    /// True when attention applies ALiBi (a flash-attention or softmax node with max_bias > 0). The
+    /// KQ mask must then carry -|query_pos - key_pos| in its visible slots instead of 0, as
+    /// llama.cpp fills it; the kernel scales that by a per-head slope.
+    bool uses_alibi() const;
+
     /// Copy `n` KV cache slots from `src` to `dst` in every "cache_*" tensor whose second dimension
     /// is the slot axis (llama.cpp's K/V layout, [row, n_kv]). Used to fork a sequence's KV.
     void copy_cache_slots(size_t src, size_t dst, size_t n);
+
+    /// Zero every "cache_*" tensor whose name starts with `prefix` (e.g. "cache_r_", "cache_s_":
+    /// the recurrent state of Mamba / RWKV layers, which a new sequence must start from zero).
+    /// Returns how many tensors were zeroed.
+    size_t zero_caches(const std::string& prefix);
+
+    /// Recurrent state (Mamba conv/ssm, RWKV, ...) is folded from every token and cannot be rewound.
+    bool has_recurrent_state() const;
+    /// Zero all of it, to start a new sequence.
+    void zero_recurrent_state();
 
     /// Named results besides the last node: nodes the artifact flags "is_output" (e.g. whisper's
     /// cross-attention scores). They are kept intact through compute(); f32 only.
@@ -118,10 +133,13 @@ public:
     /// Read a GGUF metadata key from the .gguf this model was built from (e.g. a VLM's
     /// clip.vision.image_size / image_mean / image_std, needed to reimplement preprocessing).
     bool gguf_meta_i32(const std::string& key, int32_t& out) const;
+    bool gguf_meta_f32(const std::string& key, float& out) const;
+    bool gguf_meta_str(const std::string& key, std::string& out) const;
     bool gguf_meta_f32_array(const std::string& key, std::vector<float>& out) const;
     /// Integer / raw byte / string arrays, e.g. a whisper model's vocabulary (whisper.vocab.bytes
     /// + whisper.vocab.offsets) and language codes (whisper.languages).
     bool gguf_meta_i32_array(const std::string& key, std::vector<int32_t>& out) const;
+    bool gguf_meta_u64_array(const std::string& key, std::vector<uint64_t>& out) const;
     bool gguf_meta_u8_array(const std::string& key, std::vector<uint8_t>& out) const;
     bool gguf_meta_str_array(const std::string& key, std::vector<std::string>& out) const;
 

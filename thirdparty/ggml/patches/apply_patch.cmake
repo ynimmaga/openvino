@@ -1,0 +1,12 @@
+# apply_patch.cmake -DPATCH=<file>[|<file>...]: apply git patches in the current directory, in order, unless already applied.
+string(REPLACE "|" ";" patches "${PATCH}")
+foreach(patch IN LISTS patches)
+    execute_process(COMMAND git apply --reverse --check "${patch}" RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
+    if(already EQUAL 0)
+        continue()
+    endif()
+    execute_process(COMMAND git apply "${patch}" RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "failed to apply ${patch} to ggml ${OV_GGML_GIT_TAG}; it may need rebasing on this ggml version")
+    endif()
+endforeach()

@@ -8,6 +8,8 @@
 #include <sstream>
 
 #include "decoder_runner.hpp"
+#include "dit_runner.hpp"
+#include "encoder_runner.hpp"
 #include "paged_runner.hpp"
 #include "vlm_runner.hpp"
 #include "whisper_runner.hpp"
@@ -56,8 +58,13 @@ std::shared_ptr<Runner> make_runner(const std::filesystem::path& artifact, const
     const auto has = [&](const char* name) {
         return std::find(names.begin(), names.end(), name) != names.end();
     };
+    // stable-diffusion.cpp's Qwen-Image 2.1 transformer, with its inputs named by the capture hook
+    if (has("dit_latent") && has("dit_context") && has("dit_pe")) {
+        return std::make_shared<DitRunner>(std::move(model), config);
+    }
     // A causal decoder writes a KV cache (inp_kv_idx); positions may be absent (ALiBi).
-    const bool decoder = has("inp_kv_idx") && !has("KQ_mask");
+    // Recurrent (Mamba / RWKV) layers keep per-sequence state selected by rs_s_copy instead.
+    const bool decoder = (has("inp_kv_idx") || has("rs_s_copy")) && !has("KQ_mask");
     if (decoder && config.paged) {
         return std::make_shared<PagedDecoderRunner>(std::move(model), config);
     }
@@ -72,6 +79,10 @@ std::shared_ptr<Runner> make_runner(const std::filesystem::path& artifact, const
     }
     if (has("inp_raw")) {
         return std::make_shared<VisionRunner>(std::move(model));
+    }
+    // A bidirectional encoder: token ids, positions and a full (non-causal) mask, no KV cache.
+    if (has("inp_tokens") && has("self_kq_mask") && has("out_ids")) {
+        return std::make_shared<EncoderRunner>(std::move(model), config);
     }
     if (has("inp_tokens") && model->node_count() <= 2) {
         return std::make_shared<TokenEmbeddingsRunner>(std::move(model));

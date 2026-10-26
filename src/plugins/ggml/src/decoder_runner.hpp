@@ -39,6 +39,17 @@ private:
     size_t m_vocab = 0;
     size_t m_scratch_slots = 0;
     size_t m_cached = 0;  // tokens currently held in the KV cache
+    // Recurrent layers (Mamba / RWKV / linear attention) fold every token into a state that cannot
+    // be rewound: a new sequence zeroes it, and it never sees padding rows.
+    bool m_recurrent = false;
+    // Qwen3.8-Flash-Next hashes each token with its predecessors into per-layer embedding rows (n-gram
+    // "PLE"); the graph takes the row indices as an input that only the host can compute.
+    struct Ple {
+        int64_t ngram = 0, per_gram = 0, n_heads = 0, eos = 0;
+        std::vector<uint64_t> multipliers, offsets, vocab;
+        std::string input;  // the unnamed graph input holding [n_heads, rows] indices
+    } m_ple;
+    std::vector<int64_t> m_history;  // the sequence's token ids so far (n-gram contexts)
     ov::SoPtr<ov::IVariableState> m_state;
 };
 

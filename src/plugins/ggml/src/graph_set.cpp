@@ -5,6 +5,7 @@
 #include "graph_set.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 
 #include "openvino/core/except.hpp"
@@ -42,6 +43,36 @@ GraphSet::GraphSet(std::shared_ptr<GgmlModel> main, const RunnerConfig& config) 
                         "[GGML] all graphs must share one vocabulary");
         m_graphs.push_back(std::move(g));
     }
+
+    // Attention temperature: the constants live in the GGUF for Mistral-3 and DeepSeek-2; Llama-4 hard-codes them.
+    if (m_graphs.front().model->input_size("inp_attn_scale") > 0) {
+        const GgmlModel& m = *m_graphs.front().model;
+        std::string arch;
+        m.gguf_meta_str("general.architecture", arch);
+        if (arch == "llama4") {
+            m_temp_scale = 0.1f, m_temp_offset = 1.0f, m_temp_floor = 8192;
+        } else {
+            m.gguf_meta_f32(arch + ".attention.temperature_scale", m_temp_scale);
+            m_temp_offset = 0.0f;
+            const char* floor_key = arch == "mistral3" ? ".rope.scaling.original_context_length" : ".attention.temperature_length";
+            m.gguf_meta_i32(arch + floor_key, m_temp_floor);
+        }
+        OPENVINO_ASSERT(m_temp_scale != 0.0f && m_temp_floor > 0,
+                        "[GGML] the graph takes an attention temperature input, but the model's GGUF gives no scale/length for ",
+                        arch);
+    }
+}
+
+void GraphSet::write_attn_scale(GgmlModel& model, const std::vector<int32_t>& positions) const {
+    if (m_temp_scale == 0.0f || model.input_size("inp_attn_scale") == 0) {
+        return;
+    }
+    std::vector<float> scale(model.input_size("inp_attn_scale"), 1.0f);
+    for (size_t i = 0; i < positions.size() && i < scale.size(); i++) {
+        const float steps = std::floor((static_cast<float>(positions[i]) + m_temp_offset) / static_cast<float>(m_temp_floor));
+        scale[i] = std::log(steps + 1.0f) * m_temp_scale + 1.0f;
+    }
+    model.write_input("inp_attn_scale", scale.data(), scale.size() * sizeof(float));
 }
 
 size_t GraphSet::max_tokens() const {

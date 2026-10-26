@@ -61,7 +61,12 @@ FetchContent_Declare(ggml
     GIT_REPOSITORY https://github.com/ggml-org/ggml.git
     GIT_TAG        ${OV_GGML_GIT_TAG}
     GIT_SHALLOW    TRUE
-    GIT_PROGRESS   TRUE)
+    GIT_PROGRESS   TRUE
+    # 1) PTQ1_0, PrismML's ternary quant type (Ternary-Bonsai GGUFs): CPU kernels only, small and additive.
+    # 2) GGML_MAX_NAME 64 -> 128: some GGUFs (Qwen-Image-2.1 from unsloth) carry tensor names up to 71 characters.
+    PATCH_COMMAND  ${CMAKE_COMMAND} -DOV_GGML_GIT_TAG=${OV_GGML_GIT_TAG}
+                       "-DPATCH=${CMAKE_CURRENT_SOURCE_DIR}/patches/ggml-ptq1_0.patch|${CMAKE_CURRENT_SOURCE_DIR}/patches/ggml-max-name.patch"
+                       -P ${CMAKE_CURRENT_SOURCE_DIR}/patches/apply_patch.cmake)
 
 message(STATUS "ggml: fetching ${OV_GGML_GIT_TAG} (set -Dggml_DIR=... to use a prebuilt one)")
 FetchContent_MakeAvailable(ggml)

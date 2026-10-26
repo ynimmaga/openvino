@@ -22,6 +22,7 @@
 // dimensions. A mismatch is rejected rather than silently producing nonsense.
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <fstream>
@@ -145,10 +146,41 @@ struct Loader {
             if (weights.contains(id)) {
                 const std::string gname = weights[id]["gguf_name"];
                 auto w = im.wmap.find(gname);
+                if (w == im.wmap.end()) {
+                    // stable-diffusion.cpp prefixes its parameter names ("model.diffusion_model.") where the
+                    // GGUF stores them bare
+                    static const char* prefixes[] = {"model.diffusion_model.", "diffusion_model.", "model."};
+                    for (const char* pre : prefixes) {
+                        if (gname.rfind(pre, 0) == 0) {
+                            w = im.wmap.find(gname.substr(strlen(pre)));
+                            if (w != im.wmap.end()) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (w == im.wmap.end() && gname.rfind("leaf_", 0) == 0) {
+                    // An unnamed buffer-backed leaf is a scratch tensor llama.cpp allocated, e.g. the shape
+                    // template of a GGML_OP_FILL, whose contents the op never reads: zeros do.
+                    const auto lne = l["ne"].get<std::vector<int64_t>>();
+                    ggml_tensor* t = ggml_new_tensor_4d(im.ctx_ext, type_from_name(l["type"]), lne[0], lne[1], lne[2], lne[3]);
+                    ggml_set_name(t, gname.c_str());
+                    im.constants.emplace_back(t, std::vector<uint8_t>(ggml_nbytes(t), 0));
+                    by_id[id] = t;
+                    continue;
+                }
                 OPENVINO_ASSERT(w != im.wmap.end(),
                                 "[GGML] artifact expects weight '", gname,
                                 "' which is not in the model file -- artifact and .gguf disagree");
-                by_id[id] = w->second;
+                ggml_tensor* wt = w->second;
+                // llama.cpp may give a weight a different shape than the file stores (a [n_embd * hc] vector
+                // used as [n_embd, hc]); the artifact records the shape the graph used.
+                const auto lne = l["ne"].get<std::vector<int64_t>>();
+                if (lne.size() == 4 && (wt->ne[0] != lne[0] || wt->ne[1] != lne[1] || wt->ne[2] != lne[2] || wt->ne[3] != lne[3]) &&
+                    ggml_nelements(wt) == lne[0] * lne[1] * lne[2] * lne[3] && ggml_is_contiguous(wt)) {
+                    wt = ggml_reshape_4d(im.ctx_g, wt, lne[0], lne[1], lne[2], lne[3]);
+                }
+                by_id[id] = wt;
                 continue;
             }
             const auto ne = l["ne"].get<std::vector<int64_t>>();
@@ -174,6 +206,8 @@ struct Loader {
             }
             if (l["is_input"].get<bool>()) {
                 ggml_set_input(t);
+            } else if (l["has_buffer"].get<bool>() && name.rfind("cache_k", 0) != 0 && name.rfind("cache_v", 0) != 0) {
+                im.out.state_names.insert(name);
             }
             im.out.externals[name] = t;
         }
@@ -197,13 +231,25 @@ struct Loader {
         return t;
     }
 
+    // The CPU element-wise kernels take F32 / F16 second operands; a BF16 weight (a norm scale) is widened first.
+    static ggml_tensor* operand(ggml_context* c, ggml_tensor* b) {
+        return b->type == GGML_TYPE_BF16 ? ggml_cast(c, b, GGML_TYPE_F32) : b;
+    }
+
     ggml_tensor* build_node(const json& n) {
         const std::string op = n["op"];
         ggml_context* c = im.ctx_g;
 
         if (op == "GGML_OP_GET_ROWS")  return ggml_get_rows(c, in(n, 0), in(n, 1));
-        if (op == "GGML_OP_MUL")       return ggml_mul(c, in(n, 0), in(n, 1));
-        if (op == "GGML_OP_ADD")       return ggml_add(c, in(n, 0), in(n, 1));
+        if (op == "GGML_OP_MUL") {
+            ggml_tensor* a = in(n, 0);
+            ggml_tensor* b = operand(c, in(n, 1));
+            OPENVINO_ASSERT(ggml_can_repeat(b, a), "[GGML] MUL ", n["name"].get<std::string>(), ": operand ne=[", b->ne[0], ",",
+                            b->ne[1], ",", b->ne[2], ",", b->ne[3], "] cannot broadcast into [", a->ne[0], ",", a->ne[1], ",",
+                            a->ne[2], ",", a->ne[3], "] (artifact recorded ", n["input_ne"].dump(), ")");
+            return ggml_mul(c, a, b);
+        }
+        if (op == "GGML_OP_ADD")       return ggml_add(c, in(n, 0), operand(c, in(n, 1)));
         if (op == "GGML_OP_MUL_MAT") {
             // op_params: [0] precision, [1] hint. The hint matters: llama.cpp marks its quantized-KV
             // Hadamard rotations SRC0_IS_HADAMARD, which backends run as a fast Walsh-Hadamard
@@ -219,8 +265,14 @@ struct Loader {
             return r;
         }
         if (op == "GGML_OP_RMS_NORM")  return ggml_rms_norm(c, in(n, 0), f_param(n, 0, 1e-5f));
-        if (op == "GGML_OP_SCALE")     return ggml_scale_bias(c, in(n, 0), f_param(n, 0, 1.0f),
-                                                              f_param(n, 1));
+        if (op == "GGML_OP_SCALE") {
+            ggml_tensor* x = in(n, 0);
+            if (x->type != GGML_TYPE_F32) {  // the CPU kernel scales F32 only; go through F32 and back
+                ggml_tensor* y = ggml_scale_bias(c, ggml_cast(c, x, GGML_TYPE_F32), f_param(n, 0, 0.0f), f_param(n, 1));
+                return ggml_cast(c, y, x->type);
+            }
+            return ggml_scale_bias(c, x, f_param(n, 0, 0.0f), f_param(n, 1));
+        }
         if (op == "GGML_OP_CONT") {
             // ggml_cont_2d/3d/4d make a tensor contiguous AND reshape it -- llama.cpp merges
             // attention heads that way (12 heads x 32 -> 384). Plain ggml_cont would keep the
@@ -262,6 +314,7 @@ struct Loader {
             // Explicit (non-flash) attention passes a mask and a scale; a bare softmax has
             // neither. Encoders take this path because their attention is bidirectional.
             if (n["inputs"].size() > 1) {
+                if (f_param(n, 1) > 0.0f) im.alibi = true;
                 return ggml_soft_max_ext(c, in(n, 0), in(n, 1), f_param(n, 0, 1.0f),
                                          f_param(n, 1));
             }
@@ -302,17 +355,29 @@ struct Loader {
                 for (int k = 0; k < GGML_MROPE_SECTIONS; k++) {
                     sections[k] = i_param(n, 11 + k);
                 }
-                return ggml_rope_multi(c, in(n, 0), in(n, 1), freq, i_param(n, 1), sections, mode, i_param(n, 4),
-                                       f_param(n, 5, 10000.0f), f_param(n, 6, 1.0f), f_param(n, 7),
-                                       f_param(n, 8, 1.0f), f_param(n, 9, 32.0f), f_param(n, 10, 1.0f));
+                ggml_tensor* rm = ggml_rope_multi(c, in(n, 0), in(n, 1), freq, i_param(n, 1), sections, mode,
+                                                  i_param(n, 4), f_param(n, 5, 10000.0f), f_param(n, 6, 1.0f),
+                                                  f_param(n, 7), f_param(n, 8, 1.0f), f_param(n, 9, 32.0f),
+                                                  f_param(n, 10, 1.0f));
+                if (const int offs = i_param(n, 15)) {
+                    ggml_rope_set_offset(rm, offs);
+                }
+                return rm;
             }
-            return ggml_rope_ext(c, in(n, 0), in(n, 1), freq,
-                                 i_param(n, 1), mode, i_param(n, 4),
-                                 f_param(n, 5, 10000.0f), f_param(n, 6, 1.0f), f_param(n, 7),
-                                 f_param(n, 8, 1.0f), f_param(n, 9, 32.0f), f_param(n, 10, 1.0f));
+            ggml_tensor* r = ggml_rope_ext(c, in(n, 0), in(n, 1), freq,
+                                           i_param(n, 1), mode, i_param(n, 4),
+                                           f_param(n, 5, 10000.0f), f_param(n, 6, 1.0f), f_param(n, 7),
+                                           f_param(n, 8, 1.0f), f_param(n, 9, 32.0f), f_param(n, 10, 1.0f));
+            // params[15] = n_offs: the rotated dims start at this offset (MLA models rotate only the
+            // trailing rope part of a [nope | rope] head).
+            if (const int offs = i_param(n, 15)) {
+                ggml_rope_set_offset(r, offs);
+            }
+            return r;
         }
         if (op == "GGML_OP_FLASH_ATTN_EXT") {
             // floats [0..2] = scale, max_bias, logit_softcap.
+            if (f_param(n, 1) > 0.0f) im.alibi = true;
             ggml_tensor* r = ggml_flash_attn_ext(c, in(n, 0), in(n, 1), in(n, 2),
                                                  n["inputs"].size() > 3 ? in(n, 3) : nullptr,
                                                  f_param(n, 0, 1.0f), f_param(n, 1),
@@ -337,8 +402,8 @@ struct Loader {
             return n["ne"][d].get<int64_t>();
         };
         // elementwise
-        if (op == "GGML_OP_SUB")       return ggml_sub(c, in(n, 0), in(n, 1));
-        if (op == "GGML_OP_DIV")       return ggml_div(c, in(n, 0), in(n, 1));
+        if (op == "GGML_OP_SUB")       return ggml_sub(c, in(n, 0), operand(c, in(n, 1)));
+        if (op == "GGML_OP_DIV")       return ggml_div(c, in(n, 0), operand(c, in(n, 1)));
         if (op == "GGML_OP_SQR")       return ggml_sqr(c, in(n, 0));
         if (op == "GGML_OP_SQRT")      return ggml_sqrt(c, in(n, 0));
         if (op == "GGML_OP_LOG")       return ggml_log(c, in(n, 0));
@@ -378,6 +443,78 @@ struct Loader {
         if (op == "GGML_OP_ACC") {
             return ggml_acc(c, in(n, 0), in(n, 1), i_param(n, 0), i_param(n, 1), i_param(n, 2), i_param(n, 3));
         }
+        if (op == "GGML_OP_TIMESTEP_EMBEDDING") {
+            return ggml_timestep_embedding(c, in(n, 0), i_param(n, 0), i_param(n, 1));
+        }
+        if (op == "GGML_OP_ROPE_APPLY") {
+            // stable-diffusion.cpp's rotary apply: x [D, H, T, B] with per-token 2x2 rotations pe [2, 2, D/2, T]
+            // -> [D, T, H*B]. pe[0,0] = cos, pe[0,1] = sin; interleaved pairs also carry pe[1,0] = -sin, pe[1,1] = cos.
+            ggml_tensor* x = in(n, 0);
+            ggml_tensor* pe = in(n, 1);
+            const bool interleaved = i_param(n, 0) != 0;
+            const int64_t D = x->ne[0], H = x->ne[1], T = x->ne[2], B = x->ne[3], half = D / 2;
+            ggml_tensor* xp = ggml_permute(c, x, 0, 2, 1, 3);  // [D, T, H, B]
+            auto pe_part = [&](size_t offset) {  // [half, T, 1, 1]: element (i, j, t) of pe at i = offset
+                ggml_tensor* v = ggml_view_4d(c, pe, half, T, 1, 1, pe->nb[3], pe->nb[3] * T, pe->nb[3] * T, offset);
+                v->nb[0] = pe->nb[2];
+                return ggml_cont(c, v);
+            };
+            ggml_tensor* cos_t = pe_part(0);
+            ggml_tensor* sin_t = pe_part(pe->nb[1]);
+            auto part = [&](size_t offset) {  // elements [offset, offset + half) along dim 0, as [half, T, H, B]
+                return ggml_cont(c, ggml_view_4d(c, xp, half, T, H, B, xp->nb[1], xp->nb[2], xp->nb[3], offset * xp->nb[0]));
+            };
+            ggml_tensor *a, *b, *o0, *o1;
+            if (interleaved) {
+                auto strided = [&](size_t offset) {
+                    ggml_tensor* v = ggml_view_4d(c, xp, half, T, H, B, xp->nb[1], xp->nb[2], xp->nb[3], offset * xp->nb[0]);
+                    v->nb[0] = 2 * xp->nb[0];
+                    return ggml_cont(c, v);
+                };
+                a = strided(0);
+                b = strided(1);
+                ggml_tensor* neg_sin = pe_part(pe->nb[0]);
+                ggml_tensor* cos1 = pe_part(pe->nb[0] + pe->nb[1]);
+                o0 = ggml_add(c, ggml_mul(c, a, cos_t), ggml_mul(c, b, neg_sin));
+                o1 = ggml_add(c, ggml_mul(c, a, sin_t), ggml_mul(c, b, cos1));
+                ggml_tensor* both = ggml_concat(c, ggml_reshape_4d(c, o0, 1, half, T, H * B), ggml_reshape_4d(c, o1, 1, half, T, H * B), 0);
+                return ggml_reshape_3d(c, both, D, T, H * B);
+            }
+            a = part(0);
+            b = part(half);
+            o0 = ggml_sub(c, ggml_mul(c, a, cos_t), ggml_mul(c, b, sin_t));
+            o1 = ggml_add(c, ggml_mul(c, a, sin_t), ggml_mul(c, b, cos_t));
+            return ggml_reshape_3d(c, ggml_concat(c, o0, o1, 0), D, T, H * B);
+        }
+        if (op == "GGML_OP_LIGHTNING_INDEXER") {
+            // DSA / QSA indexer score, in plain ops as llama.cpp builds it without the fused op:
+            // sum_h relu(k . q_h) * w_h + mask, [n_kv, n_batch].
+            ggml_tensor* qp = ggml_permute(c, in(n, 0), 0, 2, 1, 3);
+            ggml_tensor* kp = ggml_permute(c, in(n, 1), 0, 2, 1, 3);
+            ggml_tensor* kq = ggml_mul_mat(c, kp, qp);
+            kq = ggml_cont(c, ggml_permute(c, kq, 2, 1, 0, 3));
+            ggml_tensor* score = ggml_mul(c, ggml_relu(c, kq), in(n, 2));
+            score = ggml_cont(c, ggml_permute(c, ggml_sum_rows(c, score), 2, 1, 0, 3));
+            ggml_tensor* mask = in(n, 3);
+            return ggml_add(c, score, mask->type == GGML_TYPE_F32 ? mask : ggml_cast(c, mask, GGML_TYPE_F32));
+        }
+        if (op == "GGML_OP_DSV4_HC_PRE") {
+            // hyper-connection pre-mix: x [E, hc, T] weighted over the hc streams -> [E, T]; ggml has no such op
+            // in the pinned release, so it is built from plain ops. op_params: f32 scale, i32 gated.
+            ggml_tensor* x = in(n, 0);
+            ggml_tensor* w = in(n, 1);
+            const int64_t E = x->ne[0], hc = x->ne[1], T = x->ne[2];
+            ggml_tensor* mixed;
+            if (i_param(n, 1)) {  // per-element gate: scale * sum_h x * sigmoid(gate)
+                mixed = ggml_mul(c, x, ggml_sigmoid(c, w));
+            } else {              // weights [hc, T] broadcast over E
+                mixed = ggml_mul(c, x, ggml_reshape_3d(c, w, 1, hc, T));
+            }
+            mixed = ggml_cont(c, ggml_permute(c, mixed, 1, 0, 2, 3));  // [hc, E, T]
+            ggml_tensor* sum = ggml_reshape_2d(c, ggml_sum_rows(c, mixed), E, T);
+            const float scale = f_param(n, 0, 1.0f);
+            return scale == 1.0f ? sum : ggml_scale(c, sum, scale);
+        }
         // recurrent kernels
         if (op == "GGML_OP_SSM_CONV")  return ggml_ssm_conv(c, in(n, 0), in(n, 1));
         if (op == "GGML_OP_SSM_SCAN") {
@@ -391,6 +528,11 @@ struct Loader {
         if (op == "GGML_OP_RWKV_WKV7") {
             return ggml_rwkv_wkv7(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), in(n, 5), in(n, 6));
         }
+        if (op == "GGML_OP_GATED_DELTA_NET") {
+            // q, k, v, g, beta, state; op_params[0] = K (state snapshots kept)
+            return ggml_gated_delta_net(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), in(n, 5),
+                                        std::max(1, i_param(n, 0)));
+        }
         if (op == "GGML_OP_GATED_LINEAR_ATTN") {
             return ggml_gated_linear_attn(c, in(n, 0), in(n, 1), in(n, 2), in(n, 3), in(n, 4), f_param(n, 0));
         }
@@ -401,7 +543,12 @@ struct Loader {
             if (name == "XIELU") {
                 // op_params hold beta + softplus(alpha_n), softplus(alpha_p), beta, eps; invert softplus.
                 const float beta = f_param(n, 3), eps = f_param(n, 4);
-                const float an = std::log(std::expm1(f_param(n, 1) - beta)), ap = std::log(std::expm1(f_param(n, 2)));
+                // softplus(x) = log(1 + e^x); its inverse y + log(1 - e^-y) stays finite for the large
+                // values (hundreds) these models store, where log(expm1(y)) overflows.
+                auto inv_softplus = [](float y) {
+                    return static_cast<float>(y + std::log(-std::expm1(-static_cast<double>(y))));
+                };
+                const float an = inv_softplus(f_param(n, 1) - beta), ap = inv_softplus(f_param(n, 2));
                 return ggml_xielu(c, in(n, 0), an, ap, beta, eps);
             }
             for (int u = 0; u < GGML_UNARY_OP_COUNT; u++) {
@@ -414,6 +561,10 @@ struct Loader {
         if (op.rfind("GGML_GLU_OP_", 0) == 0) {
             const std::string name = op.substr(std::string("GGML_GLU_OP_").size());
             const bool swapped = i_param(n, 1) != 0;
+            if (name == "SWIGLU_CLAMP") {
+                OPENVINO_ASSERT(n_in > 1, "[GGML] fused SWIGLU_CLAMP is not supported");
+                return ggml_swiglu_clamp(c, in(n, 0), in(n, 1), f_param(n, 3));
+            }
             if (name == "SWIGLU_OAI") {
                 ggml_tensor* a = in(n, 0);
                 ggml_tensor* b = n_in > 1 ? in(n, 1) : nullptr;
@@ -473,6 +624,9 @@ struct Loader {
             }
             by_id[id] = t;
             im.out.map[id] = t;
+            // GGML_REF checks every node after the graph ran, so none may share a buffer.
+            static const bool keep_all = std::getenv("GGML_REF") != nullptr;
+            if (keep_all) ggml_set_output(t);
             im.out.order.push_back(t);
             im.out.last = t;
         }
@@ -484,7 +638,27 @@ struct Loader {
     // tokens / out_ids.
     void assign_roles(const json& doc) {
         std::map<std::string, std::string> role;  // leaf id -> canonical name
-        int n_setrows = 0, n_getrows = 0;
+        int n_setrows = 0, n_getrows = 0, n_masks = 0;
+        // Newer llama.cpp names the token input itself; then it, not the first GET_ROWS, is the token input.
+        std::string named_tokens_id;
+        std::map<std::string, std::string> leaf_name;
+        for (const auto& l : doc["leaves"]) {
+            leaf_name[l["id"].get<std::string>()] = l["name"].get<std::string>();
+            if (l["name"] == "inp_tokens" && l["is_input"].get<bool>()) {
+                named_tokens_id = l["id"].get<std::string>();
+            }
+        }
+        // Qwen3.8-Flash-Next's per-layer embedding rows come from an n-gram hash the host computes (an
+        // unnamed index input, not a copy of the token ids).
+        std::string arch;
+        {
+            const char* key = "general.architecture";
+            const int64_t k = im.gg ? gguf_find_key(im.gg, key) : -1;
+            if (k >= 0 && gguf_get_kv_type(im.gg, k) == GGUF_TYPE_STRING) {
+                arch = gguf_get_val_str(im.gg, k);
+            }
+        }
+        const bool ngram_ple = im.gg && !arch.empty() && gguf_find_key(im.gg, (arch + ".ple.ngram_size").c_str()) >= 0;
         for (const auto& n : doc["nodes"]) {
             const std::string op = n["op"];
             const auto& ins = n["inputs"];
@@ -500,14 +674,22 @@ struct Loader {
             if (op == "GGML_OP_ROPE") {
                 tag(1, "inp_pos");
             } else if (op == "GGML_OP_SET_ROWS") {
-                // Two distinct index leaves exist (one per cache); both are the same value, so
-                // number them and let the caller write whichever it finds.
+                // One index leaf per cache (K and V, and again for a sliding-window cache): number
+                // them all so each gets its own name; the caller writes every "inp_kv_idx*".
                 const std::string id = ins[1];
                 if (by_id.count(id) && !role.count(id)) {
-                    role[id] = n_setrows++ == 0 ? "inp_kv_idx" : "inp_kv_idx_1";
+                    role[id] = n_setrows == 0 ? "inp_kv_idx" : "inp_kv_idx_" + std::to_string(n_setrows);
+                    n_setrows++;
                 }
             } else if (op == "GGML_OP_FLASH_ATTN_EXT") {
-                tag(3, "self_kq_mask");
+                // Likewise one mask per cache (full and sliding-window attention).
+                if (ins.size() > 3) {
+                    const std::string id = ins[3];
+                    if (by_id.count(id) && !role.count(id)) {
+                        role[id] = n_masks == 0 ? "self_kq_mask" : "self_kq_mask_" + std::to_string(n_masks);
+                        n_masks++;
+                    }
+                }
             } else if (op == "GGML_OP_GET_ROWS") {
                 // The first GET_ROWS over a weight (the token embedding) takes the tokens; one
                 // over activations selects which rows to emit logits for. Other lookups into
@@ -518,8 +700,19 @@ struct Loader {
                 if (by_id.count(id) && !role.count(id)) {
                     if (!from_weight) {
                         role[id] = "inp_out_ids";
-                    } else if (n_getrows++ == 0) {
+                    } else if (!named_tokens_id.empty() && id == named_tokens_id) {
                         role[id] = "inp_tokens";
+                    } else if (ngram_ple && leaf_name[id].rfind("leaf_", 0) == 0) {
+                        // left under its own leaf name; the runner computes it
+                    } else if (named_tokens_id.empty() && n_getrows++ == 0) {
+                        role[id] = "inp_tokens";
+                    } else if (!named_tokens_id.empty() && leaf_name[id].rfind("inp_", 0) == 0) {
+                        // some other named input (e.g. llama.cpp's mixed token/embedding path)
+                    } else {
+                        n_getrows += !named_tokens_id.empty();
+                        // a further embedding table with its own copy of the token ids (Gemma-3n's
+                        // per-layer embeddings): inp_tokens_1, inp_tokens_2, ...
+                        role[id] = "inp_tokens_" + std::to_string(n_getrows - 1);
                     }
                 }
             }

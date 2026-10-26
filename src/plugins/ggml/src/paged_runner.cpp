@@ -102,6 +102,7 @@ void PagedDecoderRunner::forward(const std::vector<Row>& rows,
                                  float* logits) {
     auto& model = graph.model;
     const size_t bucket = graph.tokens;
+    const bool alibi = model->uses_alibi();
     const size_t n = rows.size();
     const size_t n_pos = GraphSet::positions_per_token(*model);
     std::vector<int32_t> tok(bucket, 0), pos(bucket * n_pos, 0);
@@ -112,13 +113,23 @@ void PagedDecoderRunner::forward(const std::vector<Row>& rows,
         if (i < n) {
             tok[i] = static_cast<int32_t>(rows[i].token);
             for (size_t j = 0; j < n_pos; j++) {
-                pos[j * bucket + i] = rows[i].position;  // same position in every M-RoPE section
+                // M-RoPE text token: [pos, pos, pos, 0], as llama.cpp fills it
+                pos[j * bucket + i] = (n_pos == 4 && j == 3) ? 0 : rows[i].position;
             }
         }
     }
-    model->write_input("inp_tokens", tok.data(), tok.size() * sizeof(int32_t));
+    for (const auto& name : model->input_names()) {
+        if (starts_with(name, "inp_tokens")) {  // every token-id input carries the same ids
+            model->write_input(name, tok.data(), tok.size() * sizeof(int32_t));
+        }
+    }
     if (n_pos > 0) {
         model->write_input("inp_pos", pos.data(), pos.size() * sizeof(int32_t));
+    }
+    {
+        std::vector<int32_t> row_positions;
+        for (const auto& r : rows) row_positions.push_back(r.position);
+        m_graphs.write_attn_scale(*model, row_positions);
     }
     std::vector<int32_t> out_ids(model->input_size("inp_out_ids"));
     for (size_t i = 0; i < out_ids.size(); i++) {
@@ -138,7 +149,7 @@ void PagedDecoderRunner::forward(const std::vector<Row>& rows,
                 }
                 const auto& table = tables[rows[r].seq];
                 for (size_t p = 0; p <= rows[r].seq_index; p++) {
-                    row[slot_of(table, p)] = 0;
+                    row[slot_of(table, p)] = alibi ? to_half(-static_cast<float>(rows[r].seq_index - p)) : 0;
                 }
             }
             model->write_input(name, mask.data(), mask.size() * sizeof(uint16_t));

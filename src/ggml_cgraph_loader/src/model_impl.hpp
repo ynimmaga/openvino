@@ -33,6 +33,9 @@ struct Out {
     std::map<std::string, ggml_tensor*> map, externals, named_outputs;
     std::set<std::string> unsupported;
     ggml_tensor* last = nullptr;
+    /// Persistent per-sequence state buffers: recurrent (Mamba / RWKV) state, whatever the model names it.
+    /// KV caches are excluded; they need no reset because slots past the sequence are masked.
+    std::set<std::string> state_names;
     /// Every node, in topological order. Needed because a forward expansion from the logits
     /// alone MISSES the KV cache writes: SET_ROWS results are not reachable from the output, so
     /// they would be dropped from the graph and attention would read an empty cache. Expanding
@@ -57,8 +60,16 @@ struct GgmlModel::Impl {
     /// shared caches belong to it, and this keeps it alive.
     std::shared_ptr<GgmlModel> base;
     std::set<ggml_tensor*> shared_caches;
+    bool alibi = false;  // some attention node has max_bias > 0
+    /// Set when some op cannot run on `backend` (e.g. a kernel the GPU backend lacks for these
+    /// shapes): the scheduler then runs just those ops on the CPU backend, as llama.cpp does.
+    ggml_backend_t cpu = nullptr;
+    ggml_backend_sched_t sched = nullptr;
+    std::vector<std::string> fallback_ops;
 
     ~Impl() {
+        if (sched) ggml_backend_sched_free(sched);
+        if (cpu) ggml_backend_free(cpu);
         if (alloc) ggml_gallocr_free(alloc);
         if (ebuf) ggml_backend_buffer_free(ebuf);
         if (ctx_ext) ggml_free(ctx_ext);
@@ -149,8 +160,32 @@ struct GgmlModel::Impl {
                 ggml_build_forward_expand(gf, t);  // already-visited nodes are skipped
             }
         }
-        alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        OPENVINO_ASSERT(ggml_gallocr_alloc_graph(alloc, gf), "[GGML] graph allocation failed");
+        // Ops the backend cannot run in these shapes and types go to the CPU backend through the
+        // scheduler; with none (the common case) the graph runs on one backend directly.
+        std::set<std::string> unsupported_here;
+        for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
+            ggml_tensor* t = ggml_graph_node(gf, i);
+            if (t->op != GGML_OP_NONE && !ggml_backend_supports_op(backend, t)) {
+                unsupported_here.insert(ggml_op_desc(t));
+            }
+        }
+        if (!unsupported_here.empty()) {
+            const bool is_cpu = ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
+            std::string list;
+            for (const auto& u : unsupported_here) {
+                list += (list.empty() ? "" : ", ") + u;
+            }
+            OPENVINO_ASSERT(!is_cpu, "[GGML] the CPU backend cannot run: ", list);
+            cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+            OPENVINO_ASSERT(cpu, "[GGML] no CPU backend to run ", list, " on");
+            ggml_backend_t backends[2] = {backend, cpu};
+            sched = ggml_backend_sched_new(backends, nullptr, 2, MAX_NODES, false, false);
+            OPENVINO_ASSERT(ggml_backend_sched_alloc_graph(sched, gf), "[GGML] graph allocation failed");
+            fallback_ops.assign(unsupported_here.begin(), unsupported_here.end());
+        } else {
+            alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+            OPENVINO_ASSERT(ggml_gallocr_alloc_graph(alloc, gf), "[GGML] graph allocation failed");
+        }
 
         for (const auto& c : constants) {
             ggml_backend_tensor_set(c.first, c.second.data(), 0, c.second.size());
@@ -159,7 +194,7 @@ struct GgmlModel::Impl {
         // KV caches live in ctx_ext, so they are allocated once and persist across compute()
         // calls; SET_ROWS writes through a view into that same buffer.
         for (const auto& kv : out.externals) {
-            if (kv.first.rfind("cache_", 0) != 0 || shared_caches.count(kv.second)) {
+            if ((kv.first.rfind("cache_", 0) != 0 && !out.state_names.count(kv.first)) || shared_caches.count(kv.second)) {
                 continue;
             }
             std::vector<char> z(ggml_nbytes(kv.second), 0);
