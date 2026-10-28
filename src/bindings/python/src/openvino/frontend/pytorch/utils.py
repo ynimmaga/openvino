@@ -60,6 +60,10 @@ F8_DTYPE_MAP = {
 
 
 def torch_tensor_to_ov_const(torch_t: torch.Tensor, shared_memory=True):
+    # Memory-free tracing placeholder: emit the original tensor and convert it to FP32 in the graph.
+    original = getattr(torch_t, "_openvino_orig_tensor", None)
+    if original is not None:
+        return ops.convert(torch_tensor_to_ov_const(original, shared_memory=shared_memory), OVType.f32)
     try:
         from torch._prims import FakeTensor
         if isinstance(torch_t, FakeTensor):
@@ -143,6 +147,16 @@ def graph_has_ops(graph, op_types: list) -> bool:
         if res:
             return res
     return res
+
+
+def to_ov_float_type(value):
+    """Convert a torch float dtype (or an OpenVINO type, or None) for a decoder's default_float_type."""
+    if value is None or isinstance(value, OVType):
+        return value
+    ov_type = pt_to_ov_type_map.get(str(value))
+    if not isinstance(ov_type, OVType):
+        raise ValueError(f"default_float_type must be a floating-point dtype, got {value!r}")
+    return ov_type
 
 
 pt_to_ov_type_map = {

@@ -889,6 +889,178 @@ def test_make_16bit_traceable_preserves_extension_dtypes(dtype):
     assert not hasattr(model.embedding, "_openvino_orig_weight")
 
 
+class _PackedExperts(torch.nn.Module):
+    """Dense batched-MoE experts: packed weights are only transposed, sized and passed to torch.bmm."""
+
+    def __init__(self, num_experts=4, hidden=8, intermediate=6):
+        super().__init__()
+        self.num_experts = num_experts
+        self.gate_up_proj = torch.nn.Parameter(torch.empty(num_experts, 2 * intermediate, hidden))
+        self.down_proj = torch.nn.Parameter(torch.empty(num_experts, hidden, intermediate))
+        self.register_buffer("offset", torch.empty(hidden), persistent=False)
+
+    def forward(self, x):
+        x = x.repeat(self.gate_up_proj.size(0), 1).view(self.num_experts, -1, x.shape[-1])
+        gate, up = torch.bmm(x, self.gate_up_proj.transpose(1, 2)).chunk(2, dim=-1)
+        return torch.bmm(torch.nn.functional.silu(gate) * up, self.down_proj.transpose(1, 2)).sum(0) + self.offset
+
+
+def _packed_experts(dtype, tmp_path=None):
+    model = _PackedExperts()
+    with torch.no_grad():
+        model.gate_up_proj.copy_(torch.linspace(-0.5, 0.5, model.gate_up_proj.numel()).reshape(model.gate_up_proj.shape))
+        model.down_proj.copy_(torch.linspace(-0.5, 0.5, model.down_proj.numel()).reshape(model.down_proj.shape))
+    model.gate_up_proj.data = model.gate_up_proj.data.to(dtype)
+    model.down_proj.data = model.down_proj.data.to(dtype)
+    model.offset = torch.arange(8).to(dtype)
+    return model.eval().requires_grad_(False)
+
+
+def _packed_experts_reference(model, example):
+    reference = _PackedExperts()
+    reference.gate_up_proj.data = model.gate_up_proj.data.float()
+    reference.down_proj.data = model.down_proj.data.float()
+    reference.offset = model.offset.float()
+    return reference(example).detach()
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float8_e4m3fn, torch.float8_e5m2])
+def test_make_16bit_traceable_packed_experts_share_storage(tmp_path, dtype):
+    from openvino import convert_model, compile_model
+    from openvino.frontend.pytorch import patch_model
+
+    torch.save({name: value.detach() for name, value in _packed_experts(dtype).state_dict().items()},
+               tmp_path / "weights.pt")
+    with torch.device("meta"):
+        model = _PackedExperts()
+    model.load_state_dict(torch.load(tmp_path / "weights.pt", mmap=True, weights_only=True), assign=True, strict=False)
+    model.offset = torch.arange(8).to(dtype)
+    model.eval().requires_grad_(False)
+    originals = {"gate_up_proj": model.gate_up_proj, "down_proj": model.down_proj}
+    example = torch.linspace(-0.5, 0.5, 16).reshape(2, 8)
+    expected = _packed_experts_reference(model, example)
+
+    try:
+        patch_model.__make_16bit_traceable(model)
+        for name, original in originals.items():
+            placeholder = getattr(model, name)
+            assert placeholder.dtype == torch.float32
+            assert placeholder.untyped_storage().nbytes() <= 4
+            assert placeholder._openvino_orig_tensor is original
+        assert model.offset.dtype == torch.float32
+        with torch.no_grad():
+            converted = convert_model(model, example_input=(example,))
+        for name, original in originals.items():
+            constant = next(op for op in converted.get_ops() if op.get_type_name() == "Constant"
+                            and list(op.get_shape()) == list(original.shape))
+            assert constant.get_byte_size() == original.numel() * original.element_size()
+            assert constant.get_data().__array_interface__["data"][0] == original.data_ptr()
+        result = compile_model(converted, "CPU", default_cfg)(example.numpy())[0]
+        np.testing.assert_allclose(result, expected.numpy(), atol=1e-5, rtol=1e-5)
+    finally:
+        patch_model.unpatch_model(model, "_openvino_module_extension_patch_orig_forward")
+    for name, original in originals.items():
+        assert getattr(model, name) is original
+        assert not hasattr(model, "_openvino_orig_" + name)
+    assert "offset" in model._buffers and "offset" not in model.state_dict()
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_make_16bit_traceable_packed_experts_freeze(dtype):
+    from openvino import convert_model, compile_model
+    from openvino.frontend.pytorch import patch_model
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+
+    class Loop(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.flag = True
+
+        def forward(self, value):
+            for _ in range(2):
+                if self.flag:
+                    return value * 1.0
+            return value + 1
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = _packed_experts(dtype)
+            self.loop = torch.jit.script(Loop())
+
+        def forward(self, value):
+            return self.experts(self.loop(value))
+
+    model = Model().eval()
+    original = model.experts.gate_up_proj
+    example = torch.linspace(-0.5, 0.5, 16).reshape(2, 8)
+    expected = _packed_experts_reference(model.experts, example)
+    try:
+        patch_model.__make_16bit_traceable(model)
+        traced = torch.jit.trace(model, example)
+        assert "prim::Uninitialized" in str(traced.inlined_graph)
+        decoder = TorchScriptPythonDecoder(model, example_input=(example,))
+        converted = convert_model(decoder)
+        result = compile_model(converted, "CPU", default_cfg)(example.numpy())[0]
+        np.testing.assert_allclose(result, expected.numpy(), atol=1e-2, rtol=1e-2)
+        assert model.experts.gate_up_proj.untyped_storage().nbytes() <= 4
+    finally:
+        patch_model.unpatch_model(model, "_openvino_module_extension_patch_orig_forward")
+    assert model.experts.gate_up_proj is original
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_make_16bit_traceable_scripted_experts_fall_back_to_fp32(dtype):
+    from openvino.frontend.pytorch import patch_model
+
+    class Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_experts = 4
+            self.gate_up_proj = torch.nn.Parameter(torch.ones(4, 4, 2, dtype=dtype), requires_grad=False)
+
+        def forward(self, value):
+            return value + self.gate_up_proj.sum()
+
+    model = torch.nn.Sequential(torch.jit.script(Experts().eval()))
+    try:
+        patch_model.__make_16bit_traceable(model)
+        parameter = model[0].gate_up_proj
+        assert parameter.dtype == torch.float32
+        assert parameter.untyped_storage().nbytes() == parameter.numel() * 4
+    finally:
+        patch_model.unpatch_model(model, "_openvino_module_extension_patch_orig_forward")
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_make_16bit_traceable_casts_other_raw_weights(dtype):
+    """Only packed expert weights get placeholders; other raw parameters are cast to FP32."""
+    from openvino.frontend.pytorch import patch_model
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_experts = 4
+            self.gate_up_proj = torch.nn.Parameter(torch.ones(4, 4, dtype=dtype), requires_grad=False)  # 2D
+            self.other_proj = torch.nn.Parameter(torch.ones(4, 2, 2, dtype=dtype), requires_grad=False)  # not packed
+            self.down_proj = torch.nn.Parameter(torch.ones(3, 2, 2, dtype=dtype), requires_grad=False)  # wrong experts
+
+    model = Model()
+    try:
+        patch_model.__make_16bit_traceable(model)
+        for name in ["gate_up_proj", "other_proj", "down_proj"]:
+            parameter = getattr(model, name)
+            assert parameter.dtype == torch.float32
+            assert parameter.untyped_storage().nbytes() == parameter.numel() * 4
+            assert not hasattr(model, "_openvino_orig_" + name)
+    finally:
+        patch_model.unpatch_model(model, "_openvino_module_extension_patch_orig_forward")
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_make_16bit_traceable_no_16bit_activation_cast(dtype):
     """A submodule that casts activations to its Linear weight's dtype must not
@@ -3332,3 +3504,526 @@ def test_compressed_tensors_missing_format_still_converts():
         assert four_bit_consts, "Expected a packed 4-bit weight constant when format is None"
     finally:
         _restore_ct_modules(prior)
+
+
+def _pack_int4(values):
+    """Pack a flat int8 tensor of [-8, 7] two-per-byte, low nibble first."""
+    shifted = (values + 8).to(torch.uint8)
+    return torch.bitwise_or(
+        shifted[0::2], torch.bitwise_left_shift(shifted[1::2], 4)).reshape(-1, 1)
+
+
+class _PackedInt4WeightCast(torch.nn.Module):
+    """Group-wise int4 weights, dequantized in f16, then cast to the model dtype.
+
+    This mirrors NNCF's ``INT4*WeightsDecompressor.forward``, which is how a
+    bf16 torch model with weight-only int4 quantization reaches the frontend.
+    Two properties matter and both are load-bearing:
+
+    1. The weights arrive as a *packed uint8* buffer unpacked by bitwise ops --
+       int4 has no torch dtype. Only ``U4BlockRepack`` / ``U4ConvertReshape``
+       collapse that into a u4/i4 Constant, so any pass that wants to match on
+       ``Constant -> Convert`` must be registered after them. Storing an int8
+       buffer instead skips the repack entirely and silently stops testing this.
+
+    2. The dequantization happens in f16 (the scale's dtype) and the chain ends
+       with an f16->bf16 cast. That trailing Convert is the node under test:
+       ``MarkCompressedFloatConstants`` cannot see it (it only marks Converts
+       that target f32 and sit directly on a Constant) and ``MarkDequantization``
+       uses the separate dequantization attribute, so without
+       ``MarkCompressedWeightsCast`` nothing marks it and consumers gating on
+       ``ov::is_decompression`` -- notably the CPU plugin's ConvertMatMulToFC --
+       reject the weights.
+    """
+
+    def __init__(self, zero_point, out_features=8, in_features=16, group_size=8):
+        super().__init__()
+        weights = torch.randint(-8, 8, (out_features * in_features,), dtype=torch.int8)
+        groups = in_features // group_size
+        self.register_buffer("qweight", _pack_int4(weights))
+        self.register_buffer(
+            "scale", torch.rand(out_features, groups, 1, dtype=torch.float16) + 0.5)
+        self.zero_point = zero_point
+        if zero_point:
+            self.register_buffer(
+                "zp", torch.full((out_features, groups, 1), 4.0, dtype=torch.float16))
+        self.compressed_weight_shape = (out_features, groups, group_size)
+        self.result_shape = (out_features, in_features)
+
+    def forward(self, x):
+        low = torch.bitwise_and(self.qweight, 15)
+        high = torch.bitwise_right_shift(self.qweight, 4)
+        w = torch.stack((low, high), dim=-1).type(torch.int8) - 8
+        w = w.reshape(self.compressed_weight_shape).type(torch.float16)
+        if self.zero_point:
+            w = w - self.zp
+        w = (w * self.scale).reshape(self.result_shape)
+        return torch.matmul(x, w.type(torch.bfloat16).t())
+
+
+class _PlainWeightCast(torch.nn.Module):
+    """A bare precision cast on float weights, with no dequantization under it.
+
+    Must not be treated as decompression -- the marking has to stay narrow.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("weight", torch.randn(4, 4, dtype=torch.float32))
+
+    def forward(self, x):
+        return torch.matmul(x, self.weight.to(torch.bfloat16).t())
+
+
+def _decompression_marked_converts(ov_model):
+    return [op for op in ov_model.get_ops()
+            if op.get_type_name() == "Convert" and "decompression_0" in op.get_rt_info()]
+
+
+@pytest.mark.parametrize("zero_point", [False, True], ids=["sym", "asym"])
+def test_compressed_weights_trailing_cast_is_marked(zero_point):
+    """The trailing dtype cast of a weight-decompression subgraph must be marked
+    as decompression."""
+    from openvino import convert_model
+
+    ov_model = convert_model(
+        _PackedInt4WeightCast(zero_point).eval(),
+        example_input=torch.randn(2, 16, dtype=torch.bfloat16))
+
+    # Guard the precondition: without an int4 Constant, assertions below
+    # would be vacuous.
+    assert any(op.get_element_type() == Type.i4
+               for op in ov_model.get_ops() if op.get_type_name() == "Constant"), \
+        "Expected U4BlockRepack to have produced an i4 weights Constant"
+
+    marked = _decompression_marked_converts(ov_model)
+    assert len(marked) == 1, \
+        f"Expected exactly one Convert marked as decompression, got {len(marked)}"
+    assert marked[0].get_output_element_type(0) == Type.bf16, \
+        "The marked Convert must be the cast into the model dtype"
+
+
+def test_plain_weights_cast_is_not_marked():
+    """A precision cast on float weights is not a decompression path."""
+    from openvino import convert_model
+
+    ov_model = convert_model(
+        _PlainWeightCast().eval(),
+        example_input=torch.randn(2, 4, dtype=torch.bfloat16))
+
+    assert not _decompression_marked_converts(ov_model), \
+        "A cast with no dequantization underneath must not be marked as decompression"
+
+
+class _Bf16Linear(torch.nn.Module):
+    """A bf16 linear layer: a large weight and a small bias."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(64, 64, dtype=torch.bfloat16)
+
+    def forward(self, x):
+        return self.linear(x)
+
+
+def _convert_fx(default_float_type):
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    with torch.no_grad():
+        ep = torch.export.export(_Bf16Linear().eval(), (torch.randn(2, 64, dtype=torch.bfloat16),))
+    # Keep the decoder referenced until convert() is done: the frontend calls back into it.
+    decoder = TorchFXPythonDecoder(ep.module(), default_float_type=default_float_type)
+    fe = FrontEndManager().load_by_framework("pytorch")
+    return fe.convert(fe.load(decoder))
+
+
+def _ops_of_type(ov_model, op_type):
+    return [op for op in ov_model.get_ordered_ops() if op.get_type_name() == op_type]
+
+
+@pytest.mark.parametrize("default_float_type", [None, torch.float32], ids=["not_given", "f32"])
+def test_canonicalize_float_precision_is_opt_in(default_float_type):
+    """With torch's own default float type (f32) the model keeps its types and gets no rt_info entry."""
+    ov_model = _convert_fx(default_float_type)
+    assert [op.get_output_element_type(0) for op in _ops_of_type(ov_model, "MatMul")] == [Type.bf16]
+    assert not ov_model.has_rt_info("default_float_type")
+
+
+def test_decoder_default_float_type():
+    """get_default_float_type() is shared by the TorchScript and FX decoders: f32 unless given."""
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+
+    example = torch.randn(2, 64, dtype=torch.bfloat16)
+    with torch.no_grad():
+        gm = torch.export.export(_Bf16Linear().eval(), (example,)).module()
+
+    def ts_decoder(**kwargs):
+        return TorchScriptPythonDecoder(_Bf16Linear().eval(), example_input=(example,), **kwargs)
+
+    for make in (lambda **kw: TorchFXPythonDecoder(gm, **kw), ts_decoder):
+        assert make().get_default_float_type() == Type.f32
+        assert make(default_float_type=torch.bfloat16).get_default_float_type() == Type.bf16
+        assert make(default_float_type=Type.f16).get_default_float_type() == Type.f16
+        with pytest.raises(ValueError):
+            make(default_float_type=torch.int32)
+
+
+def test_canonicalize_float_precision(tmp_path):
+    """bf16 activations become f32, the large weight stays bf16 behind a Convert
+    carrying the real decompression attribute, and the model's I/O keeps bf16."""
+    from openvino import Core, serialize
+
+    ov_model = _convert_fx(torch.bfloat16)
+    assert ov_model.get_rt_info("default_float_type").astype(str) == "bf16"
+    assert [op.get_output_element_type(0) for op in _ops_of_type(ov_model, "MatMul")] == [Type.f32]
+    assert ov_model.inputs[0].get_element_type() == Type.bf16
+    assert ov_model.outputs[0].get_element_type() == Type.bf16
+
+    weight_converts = [op for op in _ops_of_type(ov_model, "Convert")
+                       if op.input_value(0).get_node().get_type_name() == "Constant"]
+    assert len(weight_converts) == 1
+    assert weight_converts[0].input_value(0).get_element_type() == Type.bf16
+    assert weight_converts[0].input_value(0).get_shape() == [64, 64]
+    # The 64-element bias is folded to f32 instead.
+    assert any(op.get_element_type() == Type.f32 and op.get_shape() == [64]
+               for op in _ops_of_type(ov_model, "Constant"))
+
+    # The mark must be the real attribute: a plain rt_info value under the
+    # same key would be dropped from the IR.
+    xml_path, bin_path = str(tmp_path / "model.xml"), str(tmp_path / "model.bin")
+    serialize(ov_model, xml_path, bin_path)
+    reloaded = Core().read_model(xml_path)
+    assert [op for op in _ops_of_type(reloaded, "Convert") if "decompression_0" in op.get_rt_info()], \
+        "The decompression mark must survive an IR round trip"
+
+
+class _Bf16Passthrough(torch.nn.Module):
+    """Returns its input and a large buffer unchanged next to a computed output."""
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("w", torch.randn(128, 64, dtype=torch.bfloat16))
+
+    def forward(self, x):
+        return x, self.w, x @ self.w.t()
+
+
+def test_canonicalize_float_precision_keeps_passthrough_outputs():
+    """A Result fed straight by a Parameter or Constant keeps its type and tensor names."""
+    def convert_with(default_float_type):
+        from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+        with torch.no_grad():
+            ep = torch.export.export(_Bf16Passthrough().eval(), (torch.randn(2, 64, dtype=torch.bfloat16),))
+        decoder = TorchFXPythonDecoder(ep.module(), default_float_type=default_float_type)
+        fe = FrontEndManager().load_by_framework("pytorch")
+        return fe.convert(fe.load(decoder))
+
+    expected = convert_with(None)
+    canonical = convert_with(torch.bfloat16)
+    assert [sorted(o.get_names()) for o in canonical.outputs] == [sorted(o.get_names()) for o in expected.outputs]
+    assert [o.get_element_type() for o in canonical.outputs] == [Type.bf16] * 3
+
+
+
+class _F32CastToBf16Relu(torch.nn.Module):
+    """f32 input cast to bf16 inside the graph: no narrow Parameter or large Constant to read through."""
+
+    def forward(self, x):
+        return torch.relu(x.to(torch.bfloat16))
+
+
+class _F32CastToBf16SmallWeight(torch.nn.Module):
+    """As above, with a bf16 weight small enough (<= 1024 elements) not to be read through."""
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("w", torch.randn(8, 8, dtype=torch.bfloat16))
+
+    def forward(self, x):
+        return x.to(torch.bfloat16) @ self.w
+
+
+class _F32Only(torch.nn.Module):
+    def forward(self, x):
+        return torch.relu(x) + 1.0
+
+
+def _convert_f32_input(module, default_float_type):
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    with torch.no_grad():
+        ep = torch.export.export(module.eval(), (torch.randn(2, 8),))
+    decoder = TorchFXPythonDecoder(ep.module(), default_float_type=default_float_type)
+    fe = FrontEndManager().load_by_framework("pytorch")
+    return fe.convert(fe.load(decoder))
+
+
+@pytest.mark.parametrize("module_cls", [_F32CastToBf16Relu, _F32CastToBf16SmallWeight], ids=["relu", "small_weight"])
+def test_canonicalize_float_precision_restores_outputs_without_narrow_inputs(module_cls):
+    """The outputs get their bf16 type back even when nothing was read through."""
+    ov_model = _convert_f32_input(module_cls(), torch.bfloat16)
+    assert ov_model.inputs[0].get_element_type() == Type.f32
+    assert ov_model.outputs[0].get_element_type() == Type.bf16
+
+
+def test_canonicalize_float_precision_leaves_f32_model_unchanged():
+    """An f32-only model converted with a bf16 default float type comes out the same as without it."""
+    expected = _convert_f32_input(_F32Only(), None)
+    canonical = _convert_f32_input(_F32Only(), torch.bfloat16)
+    def summary(m):
+        return [(op.get_type_name(), op.get_output_element_type(0)) for op in m.get_ordered_ops()]
+    assert summary(canonical) == summary(expected)
+    assert [sorted(o.get_names()) for o in canonical.outputs] == [sorted(o.get_names()) for o in expected.outputs]
+
+
+class _Bf16RoundThenInt(torch.nn.Module):
+    """An explicit bf16 cast that rounds before an integer cast."""
+
+    def forward(self, x):
+        return x.to(torch.bfloat16).to(torch.int32)
+
+
+class _Bf16RoundSharedWithFloat(torch.nn.Module):
+    """The same bf16 cast feeds an integer cast and float math."""
+
+    def forward(self, x):
+        y = x.to(torch.bfloat16)
+        return y.to(torch.int32), y * 2
+
+
+@pytest.mark.parametrize("module_cls", [_Bf16RoundThenInt, _Bf16RoundSharedWithFloat], ids=["int_only", "shared"])
+def test_canonicalize_float_precision_keeps_rounding_before_integer_cast(module_cls):
+    """f32 -> bf16 -> i32 must round in bf16 first (1.999 -> 2), not truncate the f32 value (-> 1)."""
+    from openvino import Core
+
+    module = module_cls()
+    ov_model = _convert_f32_input(module, torch.bfloat16)
+    x = torch.tensor([[1.999, 2.996, 255.5, -1.999, 0.4, 7.97, 100.9, -3.999]] * 2)
+    got = Core().compile_model(ov_model, "CPU")(x.numpy())
+    expected = module(x)
+    expected = expected if isinstance(expected, tuple) else (expected,)
+    assert np.array_equal(got[0], expected[0].numpy()), f"{got[0][0]} vs {expected[0][0].numpy()}"
+    # Only the rounding cast (read by the integer cast) and the restored bf16 output stay narrow; float math is
+    # retyped to f32 as before.
+
+    def allowed(op):
+        targets = [t.get_node() for t in op.output(0).get_target_inputs()]
+        return op.get_type_name() == "Convert" and targets and all(
+            t.get_type_name() == "Result"
+            or (t.get_type_name() == "Convert" and not t.get_output_element_type(0).is_real()) for t in targets)
+
+    narrow = [op.get_type_name() for op in ov_model.get_ordered_ops()
+              if op.get_type_name() not in ("Parameter", "Result")
+              and op.get_output_element_type(0) in (Type.bf16, Type.f16) and not allowed(op)]
+    assert narrow == [], f"ops left in bf16 besides the rounding cast: {narrow}"
+
+
+class _IntRoundThenInt(torch.nn.Module):
+    """An integer source rounds too: i32 257 -> bf16 256."""
+
+    def forward(self, x):
+        return x.to(torch.bfloat16).to(torch.int32)
+
+
+class _F16RoundThenInt(torch.nn.Module):
+    """f16 -> bf16 rounds: 1.9990234375 -> 2."""
+
+    def forward(self, x):
+        return x.to(torch.bfloat16).to(torch.int32)
+
+
+class _Bf16RoundThenFloor(torch.nn.Module):
+    def forward(self, x):
+        return x.to(torch.bfloat16).floor().to(torch.int32)
+
+
+class _Bf16RoundThenCompare(torch.nn.Module):
+    """The rounding cast also feeds float math, which is retyped to f32 and reads the unrounded value as before."""
+
+    def forward(self, x):
+        y = x.to(torch.bfloat16)
+        return y >= 2.0, (y * 2).to(torch.float32)
+
+
+class _Bf16RoundThenArgmax(torch.nn.Module):
+    """1.999 and 2.0 tie in bf16, so the first one wins."""
+
+    def forward(self, x):
+        return x.to(torch.bfloat16).argmax(-1)
+
+
+class _Bf16ArangeThenInt(torch.nn.Module):
+    """A bf16 Range rounds like a cast: 257 -> 256."""
+
+    def forward(self, x):
+        return torch.arange(256, 266, dtype=torch.bfloat16).to(torch.int64) + x
+
+
+_ROUNDING_CASES = {
+    "int_source": (_IntRoundThenInt, torch.tensor([[257, 513, 1025, 7, -257, 2049, 255, 0]], dtype=torch.int32)),
+    "f16_source": (_F16RoundThenInt,
+                   torch.tensor([[1.9990234375, 3.998046875, 1.5, -1.9990234375]], dtype=torch.float16)),
+    "floor": (_Bf16RoundThenFloor, torch.tensor([[1.999, 2.996, -0.001, 255.5]])),
+    "compare": (_Bf16RoundThenCompare, torch.tensor([[1.999, 2.0, 1.9, 2.004]])),
+    "argmax": (_Bf16RoundThenArgmax, torch.tensor([[1.999, 2.0, 0.5], [0.1, 0.2, 0.3]])),
+    "arange": (_Bf16ArangeThenInt, torch.zeros(10, dtype=torch.int64)),
+}
+
+
+@pytest.mark.parametrize("case", list(_ROUNDING_CASES))
+def test_canonicalize_float_precision_keeps_rounding_before_sensitive_consumer(case):
+    """A bf16 rounding point (any non-bf16 source, or a bf16 Range) keeps its rounding when it feeds an integer,
+    boolean or step result; the float math stays in f32."""
+    from openvino import Core
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    module_cls, x = _ROUNDING_CASES[case]
+    module = module_cls().eval()
+    with torch.no_grad():
+        ep = torch.export.export(module, (x,))
+    decoder = TorchFXPythonDecoder(ep.module(), default_float_type=torch.bfloat16)
+    fe = FrontEndManager().load_by_framework("pytorch")
+    ov_model = fe.convert(fe.load(decoder))
+
+    got = Core().compile_model(ov_model, "CPU", {"INFERENCE_PRECISION_HINT": "f32"})(x.numpy())
+    expected = module(x)
+    expected = expected if isinstance(expected, tuple) else (expected,)
+    for i, exp in enumerate(expected):
+        if exp.is_floating_point():
+            assert np.allclose(got[i], exp.numpy(), rtol=1e-2), f"output {i}: {got[i]} vs {exp.numpy()}"
+        else:
+            assert np.array_equal(got[i], exp.numpy()), f"output {i}: {got[i]} vs {exp.numpy()}"
+    narrow = [op.get_type_name() for op in ov_model.get_ordered_ops()
+              if op.get_type_name() not in ("Parameter", "Convert")
+              and op.get_output_element_type(0) in (Type.bf16, Type.f16)]
+    assert narrow == [], f"ops left in bf16 besides Converts: {narrow}"
+
+
+class _SharedBf16Outputs(torch.nn.Module):
+    """Several outputs read the same bf16 tensor, next to one that doesn't."""
+
+    def forward(self, x):
+        y = torch.relu(x.to(torch.bfloat16))
+        return y, x.to(torch.bfloat16) * 2, y, y
+
+
+def test_canonicalize_float_precision_keeps_names_of_shared_outputs():
+    """Every Result reading the restored tensor keeps its type and tensor names."""
+    expected = _convert_f32_input(_SharedBf16Outputs(), None)
+    canonical = _convert_f32_input(_SharedBf16Outputs(), torch.bfloat16)
+    assert [o.get_element_type() for o in canonical.outputs] == [Type.bf16] * 4
+    names = [sorted(o.get_names()) for o in canonical.outputs]
+    assert all(names), f"outputs lost their names: {names}"
+    assert names == [sorted(o.get_names()) for o in expected.outputs]
+
+
+class _Bf16Arange(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(64, 64, dtype=torch.bfloat16)
+
+    def forward(self, x):
+        return self.linear(x) * torch.arange(64, dtype=torch.bfloat16)
+
+
+class _Bf16Eye(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(64, 64, dtype=torch.bfloat16)
+
+    def forward(self, x):
+        return self.linear(x) @ torch.eye(64, dtype=torch.bfloat16)
+
+
+class _Bf16Bernoulli(torch.nn.Module):
+    """aten.bernoulli lowers to a RandomUniform in the input's dtype."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(64, 64, dtype=torch.bfloat16)
+
+    def forward(self, x):
+        return self.linear(x) * torch.bernoulli(torch.full_like(x, 0.5))
+
+
+@pytest.mark.parametrize("module_cls", [_Bf16Arange, _Bf16Eye, _Bf16Bernoulli], ids=["range", "eye", "random_uniform"])
+def test_canonicalize_float_precision_attribute_typed_ops(module_cls):
+    """Ops whose output type is an attribute (Range, Eye, RandomUniform) are retyped along with the
+    rest of the graph instead of leaving a bf16 input next to an f32 one."""
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    with torch.no_grad():
+        ep = torch.export.export(module_cls().eval(), (torch.randn(2, 64, dtype=torch.bfloat16),))
+    decoder = TorchFXPythonDecoder(ep.module(), default_float_type=torch.bfloat16)
+    fe = FrontEndManager().load_by_framework("pytorch")
+    ov_model = fe.convert(fe.load(decoder))
+
+    attribute_typed = {"Range", "Eye", "RandomUniform"}
+    assert attribute_typed & {op.get_type_name() for op in ov_model.get_ordered_ops()}
+    assert ov_model.outputs[0].get_element_type() == Type.bf16
+    narrow = [op.get_type_name() for op in ov_model.get_ordered_ops()
+              if op.get_type_name() not in ("Constant", "Parameter", "Result", "Convert")
+              and op.get_output_element_type(0) in (Type.bf16, Type.f16)]
+    assert not narrow, f"ops left in bf16: {narrow}"
+
+
+class _Bf16LinearBiasThenAdd(torch.nn.Module):
+    """A biased Linear followed by a constant Add: FC -> Add(bias) -> Add(const) on CPU."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(64, 2048, dtype=torch.bfloat16)
+
+    def forward(self, x):
+        return self.linear(x) + torch.arange(2048, dtype=torch.bfloat16) / 2048
+
+
+def _convert_canonical(module, example):
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    with torch.no_grad():
+        ep = torch.export.export(module.eval(), (example,))
+    decoder = TorchFXPythonDecoder(ep.module(), default_float_type=example.dtype)
+    fe = FrontEndManager().load_by_framework("pytorch")
+    return fe.convert(fe.load(decoder))
+
+
+def test_canonicalize_float_precision_matches_ir_state(tmp_path):
+    """The in-memory model carries the same rt_info as the model read back from IR, so a plugin
+    compiling it from memory sees what it sees for an IR model."""
+    from openvino import Core, serialize
+
+    ov_model = _convert_canonical(_Bf16LinearBiasThenAdd(), torch.randn(2, 64, dtype=torch.bfloat16))
+    xml_path, bin_path = str(tmp_path / "model.xml"), str(tmp_path / "model.bin")
+    serialize(ov_model, xml_path, bin_path)
+    reloaded = Core().read_model(xml_path)
+
+    def convert_marks(model):
+        return sorted(sorted(op.get_rt_info().keys()) for op in model.get_ordered_ops()
+                      if op.get_type_name() == "Convert" and op.input_value(0).get_node().get_type_name() == "Constant")
+
+    assert convert_marks(ov_model) == convert_marks(reloaded)
+    assert ["decompression_0"] in convert_marks(ov_model)
+
+
+def test_canonicalize_float_precision_bias_then_add_on_cpu():
+    """FC -> Add(bias) -> Add(const) compiled from memory keeps the bias."""
+    import copy
+    from openvino import Core, Tensor, Shape
+
+    torch.manual_seed(0)
+    module = _Bf16LinearBiasThenAdd()
+    x = torch.randn(2, 64, dtype=torch.bfloat16)
+    ov_model = _convert_canonical(module, x)
+
+    linear = copy.deepcopy(module.linear).double()
+    with torch.no_grad():
+        expected = (linear(x.double()) + torch.arange(2048, dtype=torch.float64) / 2048).numpy()
+    tensor = Tensor(Type.bf16, Shape([2, 64]))
+    tensor.data[...] = x.view(torch.int16).numpy().view(np.float16)
+    result = Core().compile_model(ov_model, "CPU", {"INFERENCE_PRECISION_HINT": "f32"})([tensor])[0]
+    result = (result.view(np.uint16).astype(np.uint32) << 16).view(np.float32)
+    # A dropped bias shows up as an error of the bias magnitude (~0.125); bf16 rounding alone stays below 0.02.
+    assert np.abs(result - expected).max() < 0.05
