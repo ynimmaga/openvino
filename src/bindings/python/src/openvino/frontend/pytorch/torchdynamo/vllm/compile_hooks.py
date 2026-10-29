@@ -404,7 +404,7 @@ def retype_kv_cache_parameters(om, et_name):
     temporary instead of the persistent cache. Returns the number changed.
     """
     from openvino import Type
-    target = {"bf16": Type.bf16, "f16": Type.f16, "f32": Type.f32}.get(et_name)
+    target = {"bf16": Type.bf16, "f16": Type.f16, "f32": Type.f32, "dynamic": Type.dynamic}.get(et_name)
     if om is None or target is None:
         return 0
     changed = 0
@@ -424,10 +424,17 @@ def retype_kv_cache_parameters(om, et_name):
 def apply_kv_cache_config_defaults(config, device, options=None, om=None):
     """Fill the vLLM KV-cache and FC-quantization defaults into the OV CPU config.
 
-    Caller-supplied entries win. No-op on non-CPU devices and on non-vLLM
-    callers, which compile.py also routes here.
+    Caller-supplied entries win. No-op on non-vLLM callers, which compile.py
+    also routes here. On other devices only the KV-cache Parameters change:
+    their type is left undefined, as GenAI does, so the device plugin picks the
+    cache precision and layout (ConvertPagedAttnInputs). It does that only for a
+    PA input that is the Parameter itself, and a typed Parameter gets a Convert
+    spliced in when the inference precision differs.
     """
-    if device != "CPU" or not _preset.is_vllm_preset(options):
+    if not _preset.is_vllm_preset(options):
+        return
+    if device != "CPU":
+        retype_kv_cache_parameters(om, "dynamic")
         return
     for key, value in _preset._PRESET_CONFIG.items():
         config.setdefault(key, value)

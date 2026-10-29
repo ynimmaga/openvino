@@ -318,7 +318,7 @@ def openvino_execute(
 
     executor_parameters = executor_parameters or DEFAULT_OPENVINO_PYTHON_CONFIG
 
-    # Free the never-reused profile/dummy-run compile after use
+    # Free a shape-specialized (never-reused) profile/dummy-run compile after use
     # (OV_EVICT_PROFILE_COMPILE, default on) -- else its weight repack stays resident.
     _evict_profile = os.environ.get("OV_EVICT_PROFILE_COMPILE", "1") != "0"
 
@@ -403,9 +403,10 @@ def openvino_execute(
             _pa_out = _rh.run_pa_infer(compiled, req, ov_inputs)
             if _pa_out is _rh.PA_SKIP:
                 _eager_out = gm(*args)
-                # Profile/dummy run: this compile is never reused for real infer.
-                # Drop its cache references so the repacked weights free on scope exit.
-                if _evict_profile and _fresh_compile:
+                # Profile/dummy run. A shape-agnostic compile is the serving model
+                # and is kept for real infer; a shape-specialized one is never
+                # reused, so drop its cache references and free the repacked weights.
+                if _evict_profile and _fresh_compile and not _shape_agnostic_compile(gm, args, options):
                     compiled_cache.pop(cache_key, None)
                     req_cache.pop(cache_key, None)
                     if struct_key is not None:

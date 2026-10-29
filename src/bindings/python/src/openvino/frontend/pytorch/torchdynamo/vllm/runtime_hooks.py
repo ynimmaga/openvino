@@ -20,12 +20,34 @@ _fastinfer_port_cache = {}
 _fastinfer_bound_ids = {}   # id(req) -> [[val_id, ov_tensor_ref], ...] per port
 _fastinfer_out_cache = {}   # id(req) -> {out_port: numpy_view}
 _fastinfer_out_static = {}  # id(compiled) -> bool: output views are reusable
+_device_bound = {}          # id(req) -> {port name: RemoteTensor set on it}
 
 
 def clear_caches():
     """Drop the fast-infer caches. Their keys are id(compiled)/id(req), reused once those are freed."""
-    for cache in (_fastinfer_port_cache, _fastinfer_bound_ids, _fastinfer_out_cache, _fastinfer_out_static):
+    for cache in (_fastinfer_port_cache, _fastinfer_bound_ids, _fastinfer_out_cache, _fastinfer_out_static,
+                  _device_bound):
         cache.clear()
+
+
+def _bind_device_tensors(req, call_kwargs):
+    """set_tensor the device-resident inputs (the GPU KV cache); return the host rest.
+
+    req.infer(dict) and set_tensor(port, ...) accept host tensors only; a
+    RemoteTensor binds by port name, once, and stays bound across infers.
+    """
+    import openvino as _ov
+    bound = _device_bound.setdefault(id(req), {})
+    host = {}
+    for port, val in call_kwargs.items():
+        if isinstance(val, _ov.RemoteTensor):
+            name = port.get_any_name()
+            if bound.get(name) is not val:
+                req.set_tensor(name, val)
+                bound[name] = val
+        else:
+            host[port] = val
+    return host
 
 
 # Sentinel returned by run_pa_infer to signal "skip this infer; use eager".
@@ -147,6 +169,8 @@ def infer_with_pa(req, compiled, call_kwargs):
     updated the KV cache and GDN state in place, so a rerun would advance
     them twice for one step.
     """
+    call_kwargs = _bind_device_tensors(req, call_kwargs)
+    device_bound = _device_bound[id(req)]
     if os.environ.get("OV_FAST_INFER", "0") == "0":
         return req.infer(call_kwargs, share_inputs=True, share_outputs=True)
 
@@ -165,6 +189,8 @@ def infer_with_pa(req, compiled, call_kwargs):
             _fastinfer_bound_ids[_req_key] = _bound
         for _pi_idx, _port in enumerate(_ports):
             _val = call_kwargs.get(_port)
+            if _val is None and _port.get_any_name() in device_bound:
+                continue  # device-resident, bound by _bind_device_tensors
             if _val is None:
                 raise RuntimeError("call_kwargs missing port")
             _val_id = id(_val)
