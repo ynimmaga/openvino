@@ -33,6 +33,10 @@ otherwise it is decompressed to dense. That covers the int8 backup layers,
 embeddings, lm_head, and int4 layers fused (qkv_proj, gate_up_proj) with an
 int8 sibling, which quantization.py leaves unquantized.
 
+A per-row int8 `lm_head` (or the embedding it is tied to) is also kept in its
+stored form on `model._ov_nncf_int8_weights`, so lm_head.py can compile it
+compressed instead of from the dense copy.
+
 KV-shared attention layers (Gemma-4's last `num_kv_shared_layers`) have no
 `k_proj`/`v_proj`/`k_norm` in a transformers export -- HF never builds them --
 but vLLM builds a full `qkv_proj` and `k_norm` on every layer. They are filled
@@ -51,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 LOAD_FORMAT = "nncf_hooks"
 _HOOK = "__nncf_hooks.post_hooks.{0}__0.0.{1}"
+# Checkpoint weights lm_head may be built from: its own, or the tied embedding.
+_LM_HEAD_SOURCES = ("lm_head.weight", "embed_tokens.weight")
 _registered = None
 
 
@@ -211,6 +217,7 @@ def _define_loader():
         def _weights(self, model, model_config):
             params = dict(model.named_parameters())
             out_dtype = model_config.dtype
+            model._ov_nncf_int8_weights = {}
             with self._checkpoint(model_config.model) as (keys, get_tensor):
                 for name in sorted(keys):
                     if name.startswith("__nncf_hooks."):
@@ -241,6 +248,11 @@ def _define_loader():
                             yield (f"{module}.zero_point",
                                    _unpack_uint4(zp).reshape(out_features, groups))
                     else:
+                        if scale.dim() == 2 and name.endswith(_LM_HEAD_SOURCES):
+                            # Per-row int8 that lm_head reads (directly or tied):
+                            # kept so lm_head.py can compile it compressed.
+                            # Consumed, and dropped, by _install_ov_lm_head.
+                            model._ov_nncf_int8_weights[name] = (stored, scale, zp)
                         yield name, _dequantize(stored, scale, zp, out_dtype)
                 yield from self._kv_shared_zeros(model, params, keys, out_dtype)
 

@@ -71,13 +71,38 @@ def _find_lm_head(model):
     return lm_head
 
 
+def _int8_lm_head_source(model, weight):
+    """The loader's stored int8 tensors that `weight` was decompressed from, or None.
+
+    Matched on content, not name: a tied lm_head has no checkpoint entry of its
+    own, and after a weight update the stored tensors no longer describe the
+    live weight. Pops the stash either way; nothing else reads it.
+    """
+    import torch
+    from openvino.frontend.pytorch.torchdynamo.vllm.model_loader import _dequantize
+
+    stash = getattr(model, "_ov_nncf_int8_weights", None) or {}
+    model._ov_nncf_int8_weights = {}
+    rows = torch.linspace(0, weight.shape[0] - 1, 16).long()
+    for stored, scale, zero_point in stash.values():
+        if tuple(stored.shape) != tuple(weight.shape):
+            continue
+        dense = _dequantize(stored[rows], scale[rows],
+                            None if zero_point is None else zero_point[rows], weight.dtype)
+        if torch.equal(dense, weight[rows]):
+            return stored, scale, zero_point
+    return None
+
+
 def _install_ov_lm_head(model) -> None:
     """(Re)compile lm_head on OV and swap it onto `lm_head.cpu_linear`.
 
     Rerun on every weight mutation (reload_weights/update_weights below) since
-    build_ov_lm_head bakes the weight into an OV constant. Defaults to the
-    oneDNN dispatch (OV_LM_HEAD=0): the OV path roughly doubles main-graph
-    per-step time (see lm_head.py). Set OV_LM_HEAD=1 to opt in.
+    build_ov_lm_head bakes the weight into an OV constant. On CPU defaults to
+    the oneDNN dispatch: the OV path roughly doubles main-graph per-step time
+    (see lm_head.py); OV_LM_HEAD=1 opts in. On GPU defaults to OV on the same
+    device, int8-compressed when the checkpoint stores it so; OV_LM_HEAD=0
+    opts out.
     """
     try:
         import vllm._custom_ops as _ops
@@ -86,11 +111,16 @@ def _install_ov_lm_head(model) -> None:
         lm_head = _find_lm_head(model)
         if lm_head is not None and hasattr(lm_head, "weight") and not lm_head.weight.is_meta:
             fn = None
-            if os.environ.get("OV_LM_HEAD", "0") != "0":
+            device = str((getattr(model, "_ov_compile_options", None) or {}).get("device", "CPU"))
+            if os.environ.get("OV_LM_HEAD", "0" if device.startswith("CPU") else "1") != "0":
                 try:
-                    fn = build_ov_lm_head(lm_head.weight.data)
+                    fn = build_ov_lm_head(
+                        lm_head.weight.data, device=device,
+                        int8=_int8_lm_head_source(model, lm_head.weight.data))
                 except Exception as _e:
                     logger.warning("[OV plugin] lm_head OV compile failed: %s", _e)
+            # Unread on the oneDNN path; drop the ~V*H bytes it holds.
+            model._ov_nncf_int8_weights = {}
             if fn is not None:
                 lm_head.cpu_linear = fn
             else:
