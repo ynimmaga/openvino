@@ -171,6 +171,28 @@ def symint_shape_sources(gm, args):
         return {}
 
 
+def symbolic_tensor_dims(gm, args):
+    """{tensor_arg_index: dims dynamo traced symbolically}, read off meta['val'].
+
+    Empty when gm is None, placeholders don't line up with args, or the trace
+    is static.
+    """
+    if gm is None:
+        return {}
+    import torch
+    placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
+    if len(placeholders) != len(args):
+        return {}
+    dims = {}
+    for idx, node in enumerate(placeholders):
+        meta_val = node.meta.get("val", None)
+        if isinstance(args[idx], torch.Tensor) and isinstance(meta_val, torch.Tensor):
+            symbolic = {d for d, extent in enumerate(meta_val.shape) if isinstance(extent, torch.SymInt)}
+            if symbolic:
+                dims[idx] = symbolic
+    return dims
+
+
 def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
     """Resolve integer FX inputs (seq_lens, past_lens, ...) and drop their Parameters.
 
@@ -180,6 +202,9 @@ def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
     compiled model then serves all shapes), else a frozen trace-time Constant.
     Tensor Parameters go fully dynamic when dyn_shapes is set or every int came
     from a ShapeOf, to avoid const-folding that ShapeOf back to a fixed size.
+    With no int inputs at all there is nothing to freeze, so the dims dynamo
+    traced symbolically go dynamic and the rest stay static: one compiled
+    model then serves every length (e.g. an embedding-lookup-only graph).
     """
     import torch
     import numpy as np
@@ -240,6 +265,7 @@ def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
     for param in params_to_remove:
         om.remove_parameter(param)
 
+    symbolic_dims = symbolic_tensor_dims(gm, args) if n_int_args == 0 else {}
     all_symints_sourced = n_int_args > 0 and len(sources) == n_int_args
     if all_symints_sourced and not dyn_shapes:
         logger.debug("symint inputs sourced from ShapeOf; forcing dynamic input shapes")
@@ -261,6 +287,9 @@ def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
             om_input.get_node().set_partial_shape(PartialShape(list(input_data.size())))
         elif dyn:
             om_input.get_node().set_partial_shape(PartialShape([-1] * input_data.ndim))
+        elif idx in symbolic_dims:
+            om_input.get_node().set_partial_shape(PartialShape(
+                [-1 if d in symbolic_dims[idx] else size for d, size in enumerate(input_data.size())]))
         else:
             om_input.get_node().set_partial_shape(PartialShape(list(input_data.size())))
 

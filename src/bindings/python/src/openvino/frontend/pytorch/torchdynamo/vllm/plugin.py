@@ -17,6 +17,7 @@ import contextlib
 import itertools
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,14 @@ def _int8_lm_head_source(model, weight):
 
     stash = getattr(model, "_ov_nncf_int8_weights", None) or {}
     model._ov_nncf_int8_weights = {}
+    return _match_int8(stash, weight)
+
+
+def _match_int8(stash, weight):
+    """The stashed (stored, scale, zero_point) that decompresses to `weight`, or None."""
+    import torch
+    from openvino.frontend.pytorch.torchdynamo.vllm.model_loader import _dequantize
+
     rows = torch.linspace(0, weight.shape[0] - 1, 16).long()
     for stored, scale, zero_point in stash.values():
         if tuple(stored.shape) != tuple(weight.shape):
@@ -94,6 +103,119 @@ def _int8_lm_head_source(model, weight):
     return None
 
 
+class _CompressedEmbeddingMethod:
+    """Embedding lookup from the checkpoint's int8 (per-row) or int4 (grouped) table.
+
+    Gathers the stored rows, then dequantizes just those rows with
+    _dequantize's arithmetic (in the scale's dtype, cast after), so the output
+    is bit-identical to a dense lookup of the decompressed table. OV keeps the
+    gathered table as a u8 constant: half the dense f16 memory for int8, a
+    quarter for packed int4. Eager callers (a VLM's embed_input_ids) only ever
+    touch the rows they look up.
+    """
+
+    def __init__(self, base):
+        self.base = base
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+    def embedding(self, layer, input_):
+        import torch
+        import torch.nn.functional as F
+        scale = F.embedding(input_, layer._ov_q_scale)
+        rows = F.embedding(input_, layer._ov_q_weight)
+        zero_point = layer._ov_q_zero_point
+        if layer._ov_q_bits == 4:
+            # Packed nibbles, low first, grouped: scale [V, groups], as in _dequantize.
+            groups = scale.shape[-1]
+            rows = torch.stack((rows & 15, rows >> 4), dim=-1).reshape(*input_.shape, groups, -1)
+            rows = rows.type(scale.dtype)
+            if zero_point is None:
+                # Symmetric nibbles carry a +8 bias to stay unsigned.
+                rows = rows - 8
+            else:
+                zp = F.embedding(input_, zero_point)
+                zp = torch.stack((zp & 15, zp >> 4), dim=-1).reshape(*input_.shape, groups, 1)
+                rows = rows - zp.type(scale.dtype)
+            rows = (rows * scale.unsqueeze(-1)).reshape(*input_.shape, -1)
+        else:
+            rows = rows.type(scale.dtype)
+            if zero_point is not None:
+                rows = rows - F.embedding(input_, zero_point).type(scale.dtype)
+            rows = rows * scale
+        # Not layer.weight.dtype: reading the dense weight would pull it into the graph.
+        return rows.type(layer._ov_q_out_dtype)
+
+
+def _set_embedding_table(module, base, bits, stored=None, scale=None, zero_point=None):
+    """Point `module` at a compressed table, or back at its dense weight if `bits` is None."""
+    module.register_buffer("_ov_q_weight", stored, persistent=False)
+    module.register_buffer("_ov_q_scale", scale, persistent=False)
+    module.register_buffer("_ov_q_zero_point", zero_point, persistent=False)
+    module._ov_q_bits = bits
+    module._ov_q_out_dtype = module.weight.dtype
+    module.quant_method = base if bits is None else _CompressedEmbeddingMethod(base)
+
+
+def _install_compressed_embeddings(model) -> None:
+    """Point each input embedding at its compressed checkpoint table.
+
+    Runs before _install_ov_lm_head, which consumes the int8 stash.
+    - int4: the loader left the table packed on `_ov_nncf_int4` and the dense
+      weight unloaded, so it is always used, on every device. The unloaded
+      weight is marked released: the compile guard then refuses any graph
+      that would read it.
+    - int8: used while the stashed table still matches the live weight, so a
+      weight update brings the dense lookup back. On GPU by default
+      (OV_INT8_EMBEDDING=0 opts out), CPU opts in with 1. The dense weight it
+      replaces is marked superseded, for _release_baked_weights to hand back.
+    """
+    try:
+        import torch
+        from vllm.model_executor.layers.vocab_parallel_embedding import (
+            ParallelLMHead, VocabParallelEmbedding)
+    except Exception as _e:
+        logger.debug("[OV plugin] compressed embedding skipped: %s", _e)
+        return
+    if not isinstance(model, torch.nn.Module):
+        return
+    device = str((getattr(model, "_ov_compile_options", None) or {}).get("device", "CPU"))
+    int8_enabled = os.environ.get("OV_INT8_EMBEDDING", "0" if device.startswith("CPU") else "1") != "0"
+    stash = getattr(model, "_ov_nncf_int8_weights", None) or {}
+    for module in model.modules():
+        if not isinstance(module, VocabParallelEmbedding) or isinstance(module, ParallelLMHead) \
+                or getattr(module, "tp_size", 1) > 1:
+            continue
+        base = getattr(module.quant_method, "base", module.quant_method)
+        dense_ptr = module.weight.untyped_storage().data_ptr()
+        int4 = getattr(module, "_ov_nncf_int4", None)
+        if int4 is not None:
+            stored, scale, zero_point = int4
+            _set_embedding_table(module, base, 4, stored, scale.reshape(scale.shape[0], -1), zero_point)
+            _released_storages.add(dense_ptr)
+            logger.info("[OV plugin] embedding %s looks up its int4 checkpoint table",
+                        tuple(module.weight.shape))
+            continue
+        int8 = _match_int8(stash, module.weight) if int8_enabled and not module.weight.is_meta else None
+        if int8 is None:
+            _set_embedding_table(module, base, None)
+            _superseded_storages.discard(dense_ptr)
+            continue
+        _set_embedding_table(module, base, 8, *int8)
+        _superseded_storages.add(dense_ptr)
+        logger.info("[OV plugin] embedding %s looks up its int8 checkpoint table",
+                    tuple(module.weight.shape))
+
+
+def _int4_embedding_of(model, weight):
+    """The packed int4 table of the embedding whose (tied) weight is `weight`, or None."""
+    for module in model.modules():
+        if getattr(module, "weight", None) is weight and getattr(module, "_ov_nncf_int4", None) is not None:
+            return module._ov_nncf_int4
+    return None
+
+
 def _install_ov_lm_head(model) -> None:
     """(Re)compile lm_head on OV and swap it onto `lm_head.cpu_linear`.
 
@@ -102,21 +224,28 @@ def _install_ov_lm_head(model) -> None:
     the oneDNN dispatch: the OV path roughly doubles main-graph per-step time
     (see lm_head.py); OV_LM_HEAD=1 opts in. On GPU defaults to OV on the same
     device, int8-compressed when the checkpoint stores it so; OV_LM_HEAD=0
-    opts out.
+    opts out. Tied to an int4 embedding there is no dense weight to fall back
+    to, so it is always built int4 on OV, and failing to is an error.
     """
+    int4 = None
+    fn = None
     try:
         import vllm._custom_ops as _ops
         from vllm.model_executor.layers.utils import dispatch_cpu_unquantized_gemm
         from openvino.frontend.pytorch.torchdynamo.vllm.lm_head import build_ov_lm_head
         lm_head = _find_lm_head(model)
         if lm_head is not None and hasattr(lm_head, "weight") and not lm_head.weight.is_meta:
-            fn = None
             device = str((getattr(model, "_ov_compile_options", None) or {}).get("device", "CPU"))
-            if os.environ.get("OV_LM_HEAD", "0" if device.startswith("CPU") else "1") != "0":
+            int4 = _int4_embedding_of(model, lm_head.weight)
+            on_ov = os.environ.get("OV_LM_HEAD", "0" if device.startswith("CPU") else "1") != "0"
+            if int4 is not None and not on_ov:
+                logger.warning("[OV plugin] lm_head is tied to an int4 embedding with no dense "
+                               "weight, so it runs on OV despite OV_LM_HEAD=0")
+            if on_ov or int4 is not None:
                 try:
                     fn = build_ov_lm_head(
-                        lm_head.weight.data, device=device,
-                        int8=_int8_lm_head_source(model, lm_head.weight.data))
+                        lm_head.weight.data, device=device, int4=int4,
+                        int8=None if int4 is not None else _int8_lm_head_source(model, lm_head.weight.data))
                 except Exception as _e:
                     logger.warning("[OV plugin] lm_head OV compile failed: %s", _e)
             # Unread on the oneDNN path; drop the ~V*H bytes it holds.
@@ -125,6 +254,8 @@ def _install_ov_lm_head(model) -> None:
             model._ov_lm_head_on_ov = fn is not None
             if fn is not None:
                 lm_head.cpu_linear = fn
+            elif int4 is not None:
+                pass  # raised below, outside this best-effort block
             else:
                 _saved = getattr(_ops, "_supports_onednn", True)
                 _ops._supports_onednn = True
@@ -139,6 +270,10 @@ def _install_ov_lm_head(model) -> None:
                     _ops._supports_onednn = _saved
     except Exception as _e:
         logger.debug("[OV plugin] lm_head fast path unavailable: %s", _e)
+    if int4 is not None and fn is None:
+        raise RuntimeError(
+            "OpenVINO vLLM backend: lm_head is tied to an int4 embedding, which has no dense "
+            "weight, and could not be compiled int4 on OV; set OV_INT4_EMBEDDING=0 to load it dense")
 
 
 _KV_UPDATE_BACKENDS: dict = {}
@@ -280,8 +415,30 @@ def _mark_token_dim_dynamic(compiled_forward, eager_forward):
     return forward
 
 
+_SELF_ROOTED_GUARD = re.compile(r"(\w+\()*self\b")
+
+
+def _drop_self_guards(guard_entries):
+    """Dynamo `guard_filter_fn`: keep the guards on the forward's inputs only.
+
+    The compiled frame is the model's bound forward, so `self` is a frame input
+    and dynamo guards every weight and module attribute tracing touched
+    (~20k checks on Gemma 4, re-run before each decode step). The weights are
+    baked into the OV model as constants, so those guards can't change which
+    graph runs. vLLM's own compile path skips all guards; this keeps the input
+    guards so a change of input rank or dtype still recompiles.
+    """
+    # Names are source expressions rooted at `self`, possibly wrapped, e.g.
+    # "self._modules['model']..." or "dict(type(self)...)".
+    keep = [not _SELF_ROOTED_GUARD.match(entry.name) for entry in guard_entries]
+    logger.debug("[OV plugin] dynamo guards: kept %d of %d", sum(keep), len(keep))
+    return keep
+
+
 def _compile_ov_forward(model, options) -> None:
     import torch
+    if os.environ.get("OV_DYNAMO_FULL_GUARDS", "0") == "0":
+        options = dict(options, guard_filter_fn=_drop_self_guards)
     compiled = torch.compile(
         model._ov_eager_forward,
         backend="openvino",
@@ -310,6 +467,7 @@ def _rebuild_ov_model(runner, model) -> None:
         torch._dynamo.reset()
         options = dict(model._ov_compile_options, model_id=next(_next_model_id))
         _compile_ov_forward(model, options)
+    _install_compressed_embeddings(model)
     _install_ov_lm_head(model)
     if recompiled and hasattr(runner, "warming_up_model"):
         # As at load: the warmup compiles the dynamic serving model, so it is
@@ -321,6 +479,8 @@ def _rebuild_ov_model(runner, model) -> None:
 # _release_baked_weights returned to the OS.
 _baked_storages: set = set()
 _released_storages: set = set()
+# Dense weights nothing reads any more (an embedding now looking up int8 rows).
+_superseded_storages: set = set()
 
 _MADV_DONTNEED = 4
 
@@ -371,7 +531,9 @@ def _release_baked_weights(model) -> None:
     """Drop the host copy of every torch weight an OV GPU compile baked in.
 
     On GPU the OV model holds its own copy in device memory, so the torch
-    copy is dead weight (~1 GiB for a 1B int4 model). madvise(MADV_DONTNEED)
+    copy is dead weight (~1 GiB for a 1B int4 model). Superseded weights (the
+    dense table of an embedding that now looks up int8 rows) go too, already
+    at load. madvise(MADV_DONTNEED)
     hands the pages back while every tensor keeps its object, shape and
     address: dynamo's guards still hold, and the structural cache, which keys
     large constants by address, still matches the re-trace of the first real
@@ -397,7 +559,8 @@ def _release_baked_weights(model) -> None:
             continue
         storage = tensor.untyped_storage()
         ptr = storage.data_ptr()
-        if ptr not in _baked_storages or ptr in keep or ptr in _released_storages \
+        if (ptr not in _baked_storages and ptr not in _superseded_storages) \
+                or ptr in keep or ptr in _released_storages \
                 or tensor.numel() <= _KEY_CONTENT_NUMEL:
             continue
         # Whole pages only: the first and last may be shared with other allocations.
@@ -406,7 +569,7 @@ def _release_baked_weights(model) -> None:
         if end > start and libc.madvise(start, end - start, _MADV_DONTNEED) == 0:
             freed += end - start
             _released_storages.add(ptr)
-    logger.info("[OV plugin] released %.2f GiB of torch weights held by the OV GPU model", freed / 2**30)
+    logger.info("[OV plugin] released %.2f GiB of torch weights the OV GPU model no longer reads", freed / 2**30)
 
 
 def _forget_released(model) -> None:
@@ -555,9 +718,13 @@ def _patch_cpu_model_runner():
         self.model._ov_compile_options = options
         _compile_ov_forward(self.model, options)
 
+        _install_compressed_embeddings(self.model)
         # lm_head runs outside the compiled forward(); disabling onednn above
         # left it on plain F.linear, so give it back a fast GEMM (see lm_head.py).
         _install_ov_lm_head(self.model)
+        if _release_enabled(self.vllm_config):
+            # Before the compile, so the dense embedding table is not in its peak either.
+            _release_baked_weights(self.model)
 
     CPUModelRunner.load_model = patched_load_model
     CPUModelRunner._ov_plugin_patched = True
@@ -618,7 +785,8 @@ def _patch_worker_update_weights():
                 # A sync may cover only some weights, so the rest would rebuild from garbage.
                 raise RuntimeError(
                     "OpenVINO vLLM backend: weight updates need the torch weights, which were "
-                    "released after the GPU compile; set OV_RELEASE_TORCH_WEIGHTS=0")
+                    "released after the GPU compile (OV_RELEASE_TORCH_WEIGHTS=0 keeps them) or, "
+                    "for an int4 embedding, never loaded (OV_INT4_EMBEDDING=0 loads them)")
             _rebuild_ov_model(model_runner, model_runner.get_model())
 
     CPUWorker.finish_weight_update = patched_finish_weight_update
@@ -913,22 +1081,45 @@ def _patch_device_kv_cache():
 
     _orig_alloc = GPUModelRunner._allocate_kv_cache_tensors
 
-    def _patched_alloc(self, *args, **kwargs):
+    def _patched_alloc(self, kv_cache_config, *args, **kwargs):
         if not _on_ov_gpu(getattr(self, "vllm_config", None)):
-            return _orig_alloc(self, *args, **kwargs)
+            return _orig_alloc(self, kv_cache_config, *args, **kwargs)
         real_zeros = torch.zeros
+        # Gated DeltaNet / Mamba state stays in vLLM's host buffers (the side
+        # channel gathers and scatters it around each infer), so any buffer a
+        # state layer shares must be real; only attention-only buffers, which OV
+        # holds on the device, become placeholders. One decision per
+        # torch.zeros call, in _orig_alloc's order: packed tensors share one.
+        from vllm.v1.kv_cache_interface import MambaSpec
+        state_layers = {name for group in kv_cache_config.kv_cache_groups
+                        if isinstance(group.kv_cache_spec, MambaSpec) for name in group.layer_names}
+        tensors = kv_cache_config.kv_cache_tensors
+        packed_real = any(not state_layers.isdisjoint(t.shared_by) for t in tensors if t.block_stride > 0)
+        real = [not state_layers.isdisjoint(t.shared_by) for t in tensors if t.block_stride <= 0]
+        if any(t.block_stride > 0 for t in tensors):
+            first_packed = next(i for i, t in enumerate(tensors) if t.block_stride > 0)
+            real.insert(sum(1 for t in tensors[:first_packed] if t.block_stride <= 0), packed_real)
+        real = iter(real)
+        host_bytes = 0
 
         def _meta_zeros(*a, **kw):
+            nonlocal host_bytes
             size = a[0] if a else kw.get("size")
             if isinstance(size, int) and kw.get("dtype") == torch.int8:
+                if next(real, False):
+                    host_bytes += size
+                    return real_zeros(*a, **kw)
                 return torch.empty(size, dtype=torch.int8, device="meta")
             return real_zeros(*a, **kw)
 
         torch.zeros = _meta_zeros
         try:
-            return _orig_alloc(self, *args, **kwargs)
+            return _orig_alloc(self, kv_cache_config, *args, **kwargs)
         finally:
             torch.zeros = real_zeros
+            if host_bytes:
+                logger.info("[OV plugin] %.2f GiB of KV buffers kept on host for %d state layers",
+                            host_bytes / 2**30, len(state_layers))
 
     _orig_available = CPUWorker.determine_available_memory
 

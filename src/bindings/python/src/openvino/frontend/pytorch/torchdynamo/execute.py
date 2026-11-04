@@ -63,7 +63,9 @@ def _shape_agnostic_compile(gm, args, options):
     tensor shapes exactly when it sourced every int from a ShapeOf, since
     otherwise the ShapeOf would const-fold back to the frozen size. So the
     first condition implies the second, and the remaining case is a graph with
-    no int inputs at all, which is shape-agnostic iff dynamic shapes are on.
+    no int inputs at all: shape-agnostic if dynamic shapes are on, or if dynamo
+    traced some tensor dim symbolically, which bake_symint_constants then makes
+    dynamic (vllm.compile_hooks.symbolic_tensor_dims).
     """
     if os.environ.get("OV_SHAPE_AGNOSTIC_CACHE", "1") == "0":
         return False  # kill switch: go back to one compiled model per shape
@@ -76,7 +78,7 @@ def _shape_agnostic_compile(gm, args, options):
         if not (bool_opt(options, "vllm", False) or n_int):
             return False
         if n_int == 0:
-            return bool_opt(options, "dynamic_shapes", True)
+            return bool_opt(options, "dynamic_shapes", True) or bool(_vh.symbolic_tensor_dims(gm, args))
         return len(_vh.symint_shape_sources(gm, args)) == n_int
     except Exception as e:
         logger.debug("shape-agnostic check unavailable: %s", e)

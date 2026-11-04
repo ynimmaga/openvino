@@ -79,12 +79,54 @@ def _int8_weight(int8, et):
     return op.multiply(weight, scale)
 
 
-def build_ov_lm_head(weight, nthreads=None, device="CPU", int8=None):
+def _u4_constant(packed, shape):
+    """u4 Constant from NNCF-packed nibbles (low first), which is also OV's u4 layout."""
+    import numpy as np
+    import openvino as ov
+    import openvino.opset13 as op
+
+    tensor = ov.Tensor(ov.Type.u4, shape)
+    np.asarray(tensor.data).reshape(-1)[:] = packed.contiguous().reshape(-1).numpy()
+    return op.constant(tensor)
+
+
+def _int4_weight(int4, et):
+    """Dense-shaped [V, H] lm_head weight from an NNCF grouped int4 table, as a graph.
+
+    `int4` is the tied embedding's `(stored u8 [V, H/2] packed, scale
+    [V, groups, 1], zero_point u8 [V, groups/2] packed or None)`. u4 Constant
+    -> Convert -> Subtract -> Multiply -> Reshape is the grouped compressed-FC
+    pattern the device plugins keep int4 in device memory.
+    """
+    import numpy as np
+    import openvino.opset13 as op
+    import torch
+
+    stored, scale, zero_point = int4
+    vocab, groups = scale.shape[0], scale.shape[1]
+    hidden = stored.shape[1] * 2
+    weight = op.convert(_u4_constant(stored, [vocab, groups, hidden // groups]), et)
+    if zero_point is None:
+        # Symmetric nibbles carry a +8 bias to stay unsigned (model_loader._dequantize).
+        zp = _u4_constant(torch.tensor([8], dtype=torch.uint8), [1])
+    else:
+        zp = _u4_constant(zero_point, [vocab, groups, 1])
+    weight = op.subtract(weight, op.convert(zp, et))
+    scale = op.constant(scale.contiguous().numpy())
+    if scale.get_element_type() != et:
+        scale = op.convert(scale, et)
+    weight = op.multiply(weight, scale)
+    return op.reshape(weight, op.constant(np.array([vocab, hidden], dtype=np.int64)), False)
+
+
+def build_ov_lm_head(weight, nthreads=None, device="CPU", int8=None, int4=None):
     """Compile ``[M, H] x [H, V]`` on OV and return a cpu_linear-shaped callable.
 
     `int8` is the checkpoint's `(stored u8 [V, H], scale [V, 1], zero_point
     [V, 1] or None)`; given, the weight is compiled compressed rather than from
-    the dense `weight`, which then only supplies dtype and shape.
+    the dense `weight`, which then only supplies dtype and shape. `int4` is a
+    tied grouped int4 embedding's table (see _int4_weight), likewise; with it
+    `weight` holds no data at all.
 
     Returns None if the dtype is not one we handle or anything fails, so the
     caller can fall back to the oneDNN dispatch.
@@ -110,7 +152,9 @@ def build_ov_lm_head(weight, nthreads=None, device="CPU", int8=None):
         nthreads = int(os.environ.get("OV_INFERENCE_NUM_THREADS", "0") or 0)
 
     vocab_size, hidden_size = weight.shape
-    if int8 is not None:
+    if int4 is not None:
+        w = _int4_weight(int4, io_et)
+    elif int8 is not None:
         w = _int8_weight(int8, io_et)
     else:
         wt = ov.Tensor(et, [vocab_size, hidden_size])
@@ -159,6 +203,6 @@ def build_ov_lm_head(weight, nthreads=None, device="CPU", int8=None):
 
     logger.info("[OV plugin] lm_head compiled on OV %s: [%d, %d] %s%s, %s threads",
                 device, vocab_size, hidden_size, compute_et.get_type_name(),
-                " int8-compressed" if int8 is not None else "",
+                " int4-compressed" if int4 is not None else " int8-compressed" if int8 is not None else "",
                 nthreads if nthreads and on_cpu else "auto")
     return cpu_linear
