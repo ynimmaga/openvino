@@ -308,7 +308,8 @@ def _define_loader():
                             # unpacked so it concatenates like `scale`.
                             yield (f"{module}.zero_point",
                                    _unpack_uint4(zp).reshape(out_features, groups))
-                    elif scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES):
+                    elif (scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES)
+                          and (zp is None or scale.shape[1] % 2 == 0)):
                         # Left packed, and the dense weight unloaded; see
                         # _attach_int4_embeddings.
                         model._ov_nncf_int4_pending[name] = (stored, scale, zp)
