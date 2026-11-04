@@ -56,9 +56,9 @@ def build_spy(monkeypatch):
     calls = []
     real = lm_head_mod.build_ov_lm_head
 
-    def spy(weight, nthreads=None, device="CPU", int8=None):
+    def spy(weight, nthreads=None, device="CPU", int8=None, int4=None):
         calls.append({"device": device, "int8": int8})
-        return real(weight, nthreads=nthreads, device=device, int8=int8)
+        return real(weight, nthreads=nthreads, device=device, int8=int8, int4=int4)
 
     monkeypatch.setattr(lm_head_mod, "build_ov_lm_head", spy)
     return calls
