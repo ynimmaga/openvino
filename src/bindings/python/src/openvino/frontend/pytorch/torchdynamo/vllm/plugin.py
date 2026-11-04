@@ -210,6 +210,8 @@ def _install_compressed_embeddings(model) -> None:
 
 def _int4_embedding_of(model, weight):
     """The packed int4 table of the embedding whose (tied) weight is `weight`, or None."""
+    if not hasattr(model, "modules"):
+        return None
     for module in model.modules():
         if getattr(module, "weight", None) is weight and getattr(module, "_ov_nncf_int4", None) is not None:
             return module._ov_nncf_int4
