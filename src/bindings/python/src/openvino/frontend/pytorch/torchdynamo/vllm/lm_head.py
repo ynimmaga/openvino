@@ -112,7 +112,7 @@ def _int4_weight(int4, et):
     else:
         zp = _u4_constant(zero_point, [vocab, groups, 1])
     weight = op.subtract(weight, op.convert(zp, et))
-    scale = op.constant(scale.contiguous().numpy())
+    scale = op.constant(scale.float().contiguous().numpy())
     if scale.get_element_type() != et:
         scale = op.convert(scale, et)
     weight = op.multiply(weight, scale)
