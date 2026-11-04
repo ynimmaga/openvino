@@ -783,7 +783,12 @@ def _patch_worker_update_weights():
         _orig_finish_weight_update(self, *args, **kwargs)
         model_runner = getattr(self, "model_runner", None)
         if model_runner is not None and _ov_active(model_runner):
-            if _released_storages:
+            model = model_runner.get_model()
+            if any(
+                tensor.untyped_storage().data_ptr() in _released_storages
+                for tensor in itertools.chain(model.parameters(), model.buffers())
+                if tensor.device.type == "cpu" and not tensor.is_meta
+            ):
                 # A sync may cover only some weights, so the rest would rebuild from garbage.
                 raise RuntimeError(
                     "OpenVINO vLLM backend: weight updates need the torch weights, which were "
