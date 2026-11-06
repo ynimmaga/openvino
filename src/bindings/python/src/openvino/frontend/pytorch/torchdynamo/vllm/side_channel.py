@@ -50,6 +50,39 @@ def _ov_tensor_over_torch(tensor, param_dt, _ov):
     return _ov.Tensor(npv, _ov.Shape(list(tensor.shape)), param_dt)
 
 
+_on_gpu_cache = {}  # id(compiled) -> bool
+
+
+def _on_gpu(compiled) -> bool:
+    key = id(compiled)
+    if key not in _on_gpu_cache:
+        devices = compiled.get_property("EXECUTION_DEVICES")
+        _on_gpu_cache[key] = any(str(d).startswith("GPU") for d in devices)
+    return _on_gpu_cache[key]
+
+
+def _device_kv_tensors(num_blocks, compiled, port_names, _ov):
+    """Allocate a layer's key/value cache in device memory, in the GPU plugin's layout.
+
+    On a GPU device OV owns the KV cache: vLLM's own buffers are shape-only
+    placeholders (plugin._patch_device_kv_cache) and supply just num_blocks.
+    Each cache takes the precision and per-block shape the plugin chose at
+    compile time (ConvertPagedAttnInputs), read off the compiled port. The
+    context is that of the Core the model was compiled through. No zero fill:
+    PagedAttention writes each block before reading it.
+    """
+    from openvino.frontend.pytorch.torchdynamo.compile import get_core
+    device = next(str(d) for d in compiled.get_property("EXECUTION_DEVICES"))
+    context = get_core().get_default_context(device)
+    tensors = []
+    for name in port_names:
+        port = next(p for p in compiled.inputs if name in p.get_names())
+        block_dims = [d.get_length() for d in list(port.get_partial_shape())[1:]]
+        tensors.append(context.create_tensor(
+            port.get_element_type(), _ov.Shape([num_blocks] + block_dims), {}))
+    return tensors
+
+
 # OV CPU PagedAttention hard-requires block_size == 32. Larger
 # multiples are reshaped to it; this is the fallback when the real KV-cache
 # layout can't be read.
@@ -332,6 +365,17 @@ def _bind_paged_attention_side_channel(compiled):
                 cached = _pa_kv_ovt_cache.get(cache_key)
                 if cached is not None:
                     key_cache_ovt, value_cache_ovt, key_cache_np, value_cache_np = cached
+                elif _on_gpu(compiled):
+                    import openvino as _ov
+                    key_cache_ovt, value_cache_ovt = _device_kv_tensors(
+                        int(kv_cache.shape[0]), compiled,
+                        (fields.get("key_cache", f"__pa__{layer_name}__key_cache"),
+                         fields.get("value_cache", f"__pa__{layer_name}__value_cache")),
+                        _ov)
+                    # Device tensors have no host view; the *_np slots only mark the cache bound.
+                    key_cache_np, value_cache_np = key_cache_ovt, value_cache_ovt
+                    _pa_kv_ovt_cache[cache_key] = (
+                        key_cache_ovt, value_cache_ovt, key_cache_np, value_cache_np)
                 else:
                     # vLLM's CPU KV cache is rank-4 with K/V interleaved on
                     # the last dim, so unbind(0) picks the wrong axis. Two
@@ -659,5 +703,5 @@ def _bind_gdn_side_channel(compiled):
 def clear_caches():
     """Drop every per-model binding cache. Their keys hold id() values that are reused once the models are freed."""
     for cache in (_pa_kv_ovt_cache, _pa_sliding_window_cache, _pa_layer_static_cache, _pa_layout_cache,
-                  _gdn_layout_cache):
+                  _gdn_layout_cache, _on_gpu_cache):
         cache.clear()

@@ -24,6 +24,21 @@ from openvino.frontend.pytorch.torchdynamo.backend_utils import (
 
 logger = logging.getLogger(__name__)
 
+_core = None
+
+
+def get_core() -> Core:
+    """The process-wide Core every torchdynamo compile goes through.
+
+    Models compiled on a device then share its plugin instance and default
+    context; the vLLM GPU path allocates its KV cache from that same context so
+    the plugin can use it zero-copy.
+    """
+    global _core
+    if _core is None:
+        _core = Core()
+    return _core
+
 
 def cached_model_name(model_hash_str, device, args, cache_root, reversed=False):  # noqa: VNE003
     if model_hash_str is None:
@@ -52,7 +67,7 @@ def cached_model_name(model_hash_str, device, args, cache_root, reversed=False):
 
 
 def openvino_compile_cached_model(cached_model_path, options, *example_inputs):
-    core = Core()
+    core = get_core()
     om = core.read_model(cached_model_path + ".xml")
 
     dtype_mapping = {
@@ -85,7 +100,7 @@ def openvino_compile_cached_model(cached_model_path, options, *example_inputs):
 
 
 def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options=None):
-    core = Core()
+    core = get_core()
 
     device = _get_device(options)
     cache_root = _get_cache_dir(options)

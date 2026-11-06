@@ -171,6 +171,28 @@ def symint_shape_sources(gm, args):
         return {}
 
 
+def symbolic_tensor_dims(gm, args):
+    """{tensor_arg_index: dims dynamo traced symbolically}, read off meta['val'].
+
+    Empty when gm is None, placeholders don't line up with args, or the trace
+    is static.
+    """
+    if gm is None:
+        return {}
+    import torch
+    placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
+    if len(placeholders) != len(args):
+        return {}
+    dims = {}
+    for idx, node in enumerate(placeholders):
+        meta_val = node.meta.get("val", None)
+        if isinstance(args[idx], torch.Tensor) and isinstance(meta_val, torch.Tensor):
+            symbolic = {d for d, extent in enumerate(meta_val.shape) if isinstance(extent, torch.SymInt)}
+            if symbolic:
+                dims[idx] = symbolic
+    return dims
+
+
 def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
     """Resolve integer FX inputs (seq_lens, past_lens, ...) and drop their Parameters.
 
@@ -180,6 +202,9 @@ def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
     compiled model then serves all shapes), else a frozen trace-time Constant.
     Tensor Parameters go fully dynamic when dyn_shapes is set or every int came
     from a ShapeOf, to avoid const-folding that ShapeOf back to a fixed size.
+    With no int inputs at all there is nothing to freeze, so the dims dynamo
+    traced symbolically go dynamic and the rest stay static: one compiled
+    model then serves every length (e.g. an embedding-lookup-only graph).
     """
     import torch
     import numpy as np
@@ -240,6 +265,7 @@ def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
     for param in params_to_remove:
         om.remove_parameter(param)
 
+    symbolic_dims = symbolic_tensor_dims(gm, args) if n_int_args == 0 else {}
     all_symints_sourced = n_int_args > 0 and len(sources) == n_int_args
     if all_symints_sourced and not dyn_shapes:
         logger.debug("symint inputs sourced from ShapeOf; forcing dynamic input shapes")
@@ -261,6 +287,9 @@ def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
             om_input.get_node().set_partial_shape(PartialShape(list(input_data.size())))
         elif dyn:
             om_input.get_node().set_partial_shape(PartialShape([-1] * input_data.ndim))
+        elif idx in symbolic_dims:
+            om_input.get_node().set_partial_shape(PartialShape(
+                [-1 if d in symbolic_dims[idx] else size for d, size in enumerate(input_data.size())]))
         else:
             om_input.get_node().set_partial_shape(PartialShape(list(input_data.size())))
 
@@ -404,7 +433,7 @@ def retype_kv_cache_parameters(om, et_name):
     temporary instead of the persistent cache. Returns the number changed.
     """
     from openvino import Type
-    target = {"bf16": Type.bf16, "f16": Type.f16, "f32": Type.f32}.get(et_name)
+    target = {"bf16": Type.bf16, "f16": Type.f16, "f32": Type.f32, "dynamic": Type.dynamic}.get(et_name)
     if om is None or target is None:
         return 0
     changed = 0
@@ -424,10 +453,17 @@ def retype_kv_cache_parameters(om, et_name):
 def apply_kv_cache_config_defaults(config, device, options=None, om=None):
     """Fill the vLLM KV-cache and FC-quantization defaults into the OV CPU config.
 
-    Caller-supplied entries win. No-op on non-CPU devices and on non-vLLM
-    callers, which compile.py also routes here.
+    Caller-supplied entries win. No-op on non-vLLM callers, which compile.py
+    also routes here. On other devices only the KV-cache Parameters change:
+    their type is left undefined, as GenAI does, so the device plugin picks the
+    cache precision and layout (ConvertPagedAttnInputs). It does that only for a
+    PA input that is the Parameter itself, and a typed Parameter gets a Convert
+    spliced in when the inference precision differs.
     """
-    if device != "CPU" or not _preset.is_vllm_preset(options):
+    if not _preset.is_vllm_preset(options):
+        return
+    if device != "CPU":
+        retype_kv_cache_parameters(om, "dynamic")
         return
     for key, value in _preset._PRESET_CONFIG.items():
         config.setdefault(key, value)

@@ -33,6 +33,18 @@ otherwise it is decompressed to dense. That covers the int8 backup layers,
 embeddings, lm_head, and int4 layers fused (qkv_proj, gate_up_proj) with an
 int8 sibling, which quantization.py leaves unquantized.
 
+A per-row int8 `lm_head` or input embedding is also kept in its stored form on
+`model._ov_nncf_int8_weights`, so lm_head.py can compile it compressed and the
+embedding can look up int8 rows (plugin._install_int8_embedding) instead of
+the dense copy.
+
+A grouped int4 input embedding (`embeddings: int4` recipes, e.g. Gemma-4's
+embed_tokens and embed_tokens_per_layer) is never decompressed on an
+OpenVINO run: its packed u4 weight, scale and zero point go onto the
+embedding module as `_ov_nncf_int4`, its dense weight is left unloaded, and
+plugin._install_compressed_embeddings looks rows up from the int4 table (and
+builds a tied lm_head from it). OV_INT4_EMBEDDING=0 decompresses it instead.
+
 KV-shared attention layers (Gemma-4's last `num_kv_shared_layers`) have no
 `k_proj`/`v_proj`/`k_norm` in a transformers export -- HF never builds them --
 but vLLM builds a full `qkv_proj` and `k_norm` on every layer. They are filled
@@ -51,6 +63,11 @@ logger = logging.getLogger(__name__)
 
 LOAD_FORMAT = "nncf_hooks"
 _HOOK = "__nncf_hooks.post_hooks.{0}__0.0.{1}"
+# Per-row int8 weights kept in stored form: lm_head's own, and the embedding
+# (looked up as int8, and the source of a tied lm_head).
+_LM_HEAD_SOURCES = ("lm_head.weight", "embed_tokens.weight")
+# Input embeddings kept packed when stored grouped int4 (_keep_int4_embeddings).
+_INT4_EMBEDDING_SOURCES = ("embed_tokens.weight", "embed_tokens_per_layer.weight")
 _registered = None
 
 
@@ -89,6 +106,54 @@ def _dequantize(stored, scale, zero_point, out_dtype):
             weight = weight - zero_point.type(scale.dtype)
     weight = weight * scale
     return weight.reshape(out_features, -1).type(out_dtype)
+
+
+def _keep_int4_embeddings():
+    """Keep int4 embeddings packed: only on OV runs, where the plugin can look them up."""
+    import os
+
+    if os.environ.get("OV_INT4_EMBEDDING", "1") == "0":
+        return False
+    try:
+        from vllm.config import get_current_vllm_config_or_none
+        from openvino.frontend.pytorch.torchdynamo.vllm.plugin import _ov_requested
+    except Exception:
+        return False
+    return _ov_requested(get_current_vllm_config_or_none())
+
+
+def _attach_int4_embeddings(model, pending):
+    """Hand each packed int4 table to the embedding module of its shape.
+
+    Returns the names of the dense weights this leaves unloaded. Matched by
+    shape, not name: vLLM renames checkpoint weights (Gemma-4 drops
+    `language_model.`). A tied lm_head shares the embedding's Parameter, so it
+    needs nothing of its own.
+    """
+    from vllm.model_executor.layers.vocab_parallel_embedding import (
+        ParallelLMHead, VocabParallelEmbedding)
+
+    unloaded = set()
+    for module_name, module in model.named_modules():
+        if not isinstance(module, VocabParallelEmbedding) or isinstance(module, ParallelLMHead):
+            continue
+        vocab, hidden = module.weight.shape
+        for name, (stored, scale, zero_point) in list(pending.items()):
+            if scale.shape[0] != vocab or stored.numel() * 2 != vocab * hidden:
+                continue
+            if getattr(module, "tp_size", 1) > 1:
+                raise ValueError(f"[OV plugin] {LOAD_FORMAT}: int4 embedding {name} "
+                                 "needs tensor parallel size 1; set OV_INT4_EMBEDDING=0")
+            groups = scale.shape[1]
+            module._ov_nncf_int4 = (
+                stored.reshape(vocab, hidden // 2), scale,
+                None if zero_point is None else zero_point.reshape(vocab, groups // 2))
+            unloaded.add(f"{module_name}.weight")
+            del pending[name]
+    if pending:
+        raise ValueError(f"[OV plugin] {LOAD_FORMAT}: no embedding of the shape of "
+                         f"int4 {sorted(pending)}; set OV_INT4_EMBEDDING=0")
+    return unloaded
 
 
 def _pt2_state_dict(path):
@@ -211,6 +276,9 @@ def _define_loader():
         def _weights(self, model, model_config):
             params = dict(model.named_parameters())
             out_dtype = model_config.dtype
+            model._ov_nncf_int8_weights = {}
+            model._ov_nncf_int4_pending = {}
+            keep_int4 = _keep_int4_embeddings()
             with self._checkpoint(model_config.model) as (keys, get_tensor):
                 for name in sorted(keys):
                     if name.startswith("__nncf_hooks."):
@@ -240,15 +308,26 @@ def _define_loader():
                             # unpacked so it concatenates like `scale`.
                             yield (f"{module}.zero_point",
                                    _unpack_uint4(zp).reshape(out_features, groups))
+                    elif (scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES)
+                          and (zp is None or scale.shape[1] % 2 == 0)):
+                        # Left packed, and the dense weight unloaded; see
+                        # _attach_int4_embeddings.
+                        model._ov_nncf_int4_pending[name] = (stored, scale, zp)
                     else:
+                        if scale.dim() == 2 and name.endswith(_LM_HEAD_SOURCES):
+                            # Per-row int8 that lm_head or the embedding reads:
+                            # kept so both can stay compressed. Read by
+                            # _install_int8_embedding, dropped by _install_ov_lm_head.
+                            model._ov_nncf_int8_weights[name] = (stored, scale, zp)
                         yield name, _dequantize(stored, scale, zp, out_dtype)
                 yield from self._kv_shared_zeros(model, params, keys, out_dtype)
 
         def load_weights(self, model, model_config):
             loaded = model.load_weights(self._weights(model, model_config))
+            unloaded = _attach_int4_embeddings(model, model.__dict__.pop("_ov_nncf_int4_pending", {}))
             # DefaultModelLoader skips this check for quantized models; here a
             # missed key means a layout this loader does not understand.
-            missing = {n for n, _ in model.named_parameters()} - set(loaded or ())
+            missing = {n for n, _ in model.named_parameters()} - set(loaded or ()) - unloaded
             if missing:
                 raise ValueError(
                     f"[OV plugin] {LOAD_FORMAT}: not initialized from "

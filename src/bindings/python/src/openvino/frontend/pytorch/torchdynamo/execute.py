@@ -63,7 +63,9 @@ def _shape_agnostic_compile(gm, args, options):
     tensor shapes exactly when it sourced every int from a ShapeOf, since
     otherwise the ShapeOf would const-fold back to the frozen size. So the
     first condition implies the second, and the remaining case is a graph with
-    no int inputs at all, which is shape-agnostic iff dynamic shapes are on.
+    no int inputs at all: shape-agnostic if dynamic shapes are on, or if dynamo
+    traced some tensor dim symbolically, which bake_symint_constants then makes
+    dynamic (vllm.compile_hooks.symbolic_tensor_dims).
     """
     if os.environ.get("OV_SHAPE_AGNOSTIC_CACHE", "1") == "0":
         return False  # kill switch: go back to one compiled model per shape
@@ -76,7 +78,7 @@ def _shape_agnostic_compile(gm, args, options):
         if not (bool_opt(options, "vllm", False) or n_int):
             return False
         if n_int == 0:
-            return bool_opt(options, "dynamic_shapes", True)
+            return bool_opt(options, "dynamic_shapes", True) or bool(_vh.symbolic_tensor_dims(gm, args))
         return len(_vh.symint_shape_sources(gm, args)) == n_int
     except Exception as e:
         logger.debug("shape-agnostic check unavailable: %s", e)
@@ -318,7 +320,7 @@ def openvino_execute(
 
     executor_parameters = executor_parameters or DEFAULT_OPENVINO_PYTHON_CONFIG
 
-    # Free the never-reused profile/dummy-run compile after use
+    # Free a shape-specialized (never-reused) profile/dummy-run compile after use
     # (OV_EVICT_PROFILE_COMPILE, default on) -- else its weight repack stays resident.
     _evict_profile = os.environ.get("OV_EVICT_PROFILE_COMPILE", "1") != "0"
 
@@ -403,9 +405,10 @@ def openvino_execute(
             _pa_out = _rh.run_pa_infer(compiled, req, ov_inputs)
             if _pa_out is _rh.PA_SKIP:
                 _eager_out = gm(*args)
-                # Profile/dummy run: this compile is never reused for real infer.
-                # Drop its cache references so the repacked weights free on scope exit.
-                if _evict_profile and _fresh_compile:
+                # Profile/dummy run. A shape-agnostic compile is the serving model
+                # and is kept for real infer; a shape-specialized one is never
+                # reused, so drop its cache references and free the repacked weights.
+                if _evict_profile and _fresh_compile and not _shape_agnostic_compile(gm, args, options):
                     compiled_cache.pop(cache_key, None)
                     req_cache.pop(cache_key, None)
                     if struct_key is not None:
