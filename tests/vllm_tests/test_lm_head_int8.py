@@ -40,6 +40,10 @@ class _FakeModel:
         if device is not None:
             self._ov_compile_options = {"device": device}
 
+    def modules(self):
+        # _install_ov_lm_head looks for an int4 embedding the lm_head is tied to.
+        return iter((self, self.lm_head))
+
 
 def _int8_checkpoint(V, H, dtype):
     """NNCF per-row int8 asym tensors and the dense weight the loader yields from them."""
@@ -56,9 +60,9 @@ def build_spy(monkeypatch):
     calls = []
     real = lm_head_mod.build_ov_lm_head
 
-    def spy(weight, nthreads=None, device="CPU", int8=None):
+    def spy(weight, nthreads=None, device="CPU", int8=None, int4=None):
         calls.append({"device": device, "int8": int8})
-        return real(weight, nthreads=nthreads, device=device, int8=int8)
+        return real(weight, nthreads=nthreads, device=device, int8=int8, int4=int4)
 
     monkeypatch.setattr(lm_head_mod, "build_ov_lm_head", spy)
     return calls
@@ -121,7 +125,7 @@ def test_default_depends_on_device(device, expect_ov, monkeypatch):
     monkeypatch.delenv("OV_LM_HEAD", raising=False)
     calls = []
     monkeypatch.setattr(lm_head_mod, "build_ov_lm_head",
-                        lambda weight, nthreads=None, device="CPU", int8=None:
+                        lambda weight, nthreads=None, device="CPU", int8=None, int4=None:
                         calls.append(device) or (lambda x, w, b: x))
     int8, weight = _int8_checkpoint(64, 32, torch.float16)
     model = _FakeModel(weight, {"model.embed_tokens.weight": int8}, device=device)

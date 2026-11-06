@@ -38,6 +38,10 @@ class _FakeModel:
     def __init__(self, weight):
         self.lm_head = _FakeLMHead(weight)
 
+    def modules(self):
+        # _install_ov_lm_head looks for an int4 embedding the lm_head is tied to.
+        return iter((self, self.lm_head))
+
 
 def _param(w):
     return torch.nn.Parameter(w.clone(), requires_grad=False)

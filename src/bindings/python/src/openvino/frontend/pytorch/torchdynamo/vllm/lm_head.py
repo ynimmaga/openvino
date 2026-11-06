@@ -4,7 +4,7 @@
 
 # mypy: ignore-errors
 
-"""Run lm_head through OV instead of torch.
+"""Run lm_head through OV instead of torch (OV_LM_HEAD: default on for GPU, off for CPU).
 
 vLLM calls compute_logits() outside the OV-compiled region, so lm_head's GEMM
 normally runs on torch/oneDNN. Moving it to OV frees it from OMP_NUM_THREADS
@@ -16,6 +16,9 @@ here. So on CPU it is off unless OV_LM_HEAD=1.
 On GPU it is on unless OV_LM_HEAD=0: there the alternative is a CPU GEMM
 between two GPU steps, and an NNCF per-row int8 lm_head (or tied embedding)
 is compiled compressed, reading half the bytes of the dense f16 weight.
+
+An lm_head tied to an int4 embedding has no dense weight for torch to use, so
+it runs here on every device, whatever OV_LM_HEAD says.
 """
 
 import logging
