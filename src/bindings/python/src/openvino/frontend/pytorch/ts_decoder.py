@@ -21,6 +21,7 @@ from openvino.frontend.pytorch.utils import (
     convert_quantized_tensor,
     graph_has_ops,
     patch_none_example,
+    to_ov_float_type,
 )
 from openvino import opset11 as ops
 from openvino.frontend.pytorch import quantized, patch_model
@@ -55,8 +56,11 @@ class TorchScriptPythonDecoder(TorchDecoderBase):
         module_extensions=None,
         trace_kwargs=None,
         getattr_cache=None,
+        default_float_type=None,
     ):
         super().__init__()
+        # torch dtype the model was built with, e.g. torch.bfloat16; see TorchDecoderBase.get_default_float_type.
+        self._set_default_float_type(to_ov_float_type(default_float_type))
         self._shared_memory = shared_memory
         self._input_is_list = False
         self.constant_cache = constant_cache if constant_cache is not None else dict()  # noqa: C408
@@ -132,6 +136,12 @@ class TorchScriptPythonDecoder(TorchDecoderBase):
                                 torch.float16, torch.bfloat16]
             if hasattr(module, "weight") and getattr(module.weight, "dtype", None) in compressed_types:
                 preserved_attributes.append(name)
+            for attr in module._parameters.keys():
+                if attr.startswith(patch_model._ORIG_WEIGHT_ATTR_PREFIX):
+                    # Freezing would fold the zero placeholder into a constant and drop the original weight.
+                    prefix = name + "." if name else ""
+                    preserved_attributes.extend([prefix + attr[len(patch_model._ORIG_WEIGHT_ATTR_PREFIX):],
+                                                 prefix + attr])
         return preserved_attributes
 
     def _get_scripted_model(self, pt_module, example_inputs=None, skip_freeze=False, trace_kwargs=None):
@@ -565,6 +575,12 @@ class TorchScriptPythonDecoder(TorchDecoderBase):
                     pt_value, _ = self._value_from_getattr(in_node)
                     return pt_value is None
         return False
+
+    def get_input_sequences(self) -> dict:
+        if (isinstance(self.graph_element, torch.Node)
+                and self.graph_element.kind() in ("prim::ListUnpack", "prim::TupleUnpack")):
+            return {0: list(range(len(self.raw_outputs)))}
+        return {}
 
     def may_produce_alias(self, in_index: int, out_index: int) -> bool:
         try:

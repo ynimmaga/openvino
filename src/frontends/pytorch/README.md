@@ -17,6 +17,7 @@ directories:
 
 * [include](./include) is a public frontend API.
 * [src](./src/) folder contains the sources of the component.
+* [docs](./docs/) folder contains the guides listed in [torch.compile and vLLM](#torchcompile-and-vllm).
 
 ## Architecture
 
@@ -70,6 +71,15 @@ operations inside the region is selected by the OpenVINO device.
 Outputs of such a region that are its operands or their views keep the alias relation,
 so later in-place operations on them update the operands. This does not require
 `ExportedProgram.run_decompositions()` or an additional trace.
+
+### Exported `torch.vmap` regions
+
+The FX decoder replaces each exported `torch.vmap` region with its vectorized ATen
+operations, traced from the tensor and symbolic metadata of the region operands.
+Operations inside the region, including `flat_apply` calls, are traced as well.
+This region trace runs after export for both models and supplied exported graphs.
+The original graph stays unchanged, no OpenVINO loops are introduced, and the
+trace must not introduce new shape guards.
 
 ## How to Implement Support for a New PyTorch Operation
 
@@ -339,6 +349,19 @@ tensors, which is not directly supported by OpenVINO, to workaround this problem
 name as input tensor. However if `mutate_input` was omitted in translation
 function, unchanged tensor will be returned after operation execution, so it is
 very important to pay attention to this.
+
+## torch.compile and vLLM
+
+The `torch.compile` backend and its vLLM integration are described in these guides:
+
+* [torch.compile backend internals](./docs/torch_compile.md): flow, weight freezing, fallback and compiled-model caches
+* [vLLM integration architecture](./docs/vllm_integration.md): plugin, graph rewrites, KV-cache ownership and side channel
+* [Custom operations of the vLLM path](./docs/custom_operations.md): `ov_ext::paged_attention` and `ov_ext::gdn_attention`
+* [Narrow default float type](./docs/default_float_type.md): bf16/f16 models and `CanonicalizeFloatPrecision`
+* [Testing the torch.compile and vLLM paths](./docs/vllm_tests.md)
+
+Installation and usage of the vLLM backend are in its
+[user guide](../../bindings/python/src/openvino/frontend/pytorch/torchdynamo/vllm/README.md).
 
 ## See Also
  * [OpenVINO README](../../../README.md)
