@@ -16,21 +16,11 @@
 
 namespace {
 
-size_t count_of_type(const std::shared_ptr<ov::Model>& model, const ov::DiscreteTypeInfo& type) {
-    size_t n = 0;
-    for (const auto& op : model->get_ops()) {
-        if (op->get_type_info().is_castable(type)) {
-            ++n;
-        }
-    }
-    return n;
-}
+// cos/sin half-sized to match each split output (see normalize_vllm_rope_test.cpp).
+const ov::Shape full_shape{1, 4, 8};
+const ov::Shape half_shape{1, 4, 4};
 
 std::shared_ptr<ov::Model> build_vllm_rope_model() {
-    // cos/sin half-sized to match each split output (see
-    // normalize_vllm_rope_test.cpp).
-    const ov::Shape full_shape{1, 4, 8};
-    const ov::Shape half_shape{1, 4, 4};
     auto x = std::make_shared<ov::opset1::Parameter>(ov::element::f32, full_shape);
     auto cos = std::make_shared<ov::opset1::Parameter>(ov::element::f32, half_shape);
     auto sin = std::make_shared<ov::opset1::Parameter>(ov::element::f32, half_shape);
@@ -52,26 +42,41 @@ std::shared_ptr<ov::Model> build_vllm_rope_model() {
     return std::make_shared<ov::Model>(concat, ov::ParameterVector{x, cos, sin});
 }
 
-}  // namespace
+// The rotate-half form NormalizeVLLMRoPE emits.
+std::shared_ptr<ov::Model> build_normalized_rope_model() {
+    auto x = std::make_shared<ov::opset1::Parameter>(ov::element::f32, full_shape);
+    auto cos = std::make_shared<ov::opset1::Parameter>(ov::element::f32, half_shape);
+    auto sin = std::make_shared<ov::opset1::Parameter>(ov::element::f32, half_shape);
+    auto cos_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{cos, cos}, -1);
+    auto sin_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{sin, sin}, -1);
 
-TEST(vllm_gating, rope_pass_skipped_without_vllm_model_flag) {
-    auto model = build_vllm_rope_model();
-    ov::pass::Manager manager;
-    manager.register_pass<ov::pass::CommonOptimizations>();
-    manager.run_passes(model);
-    // NormalizeVLLMRoPE not applied: original Split survives, no VariadicSplit
-    // was introduced in its place.
-    EXPECT_EQ(count_of_type(model, ov::op::v1::Split::get_type_info_static()), 1u);
-    EXPECT_EQ(count_of_type(model, ov::op::v1::VariadicSplit::get_type_info_static()), 0u);
+    auto axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {2});
+    auto lengths = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{2}, {4, 4});
+    auto vsplit = std::make_shared<ov::op::v1::VariadicSplit>(x, axis, lengths);
+
+    auto neg_one = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {-1.0f});
+    auto x2_neg = std::make_shared<ov::op::v1::Multiply>(vsplit->output(1), neg_one);
+    auto x_rot = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x2_neg, vsplit->output(0)}, -1);
+    auto x_cos = std::make_shared<ov::op::v1::Multiply>(x, cos_full);
+    auto xrot_sin = std::make_shared<ov::op::v1::Multiply>(x_rot, sin_full);
+    auto out = std::make_shared<ov::op::v1::Add>(x_cos, xrot_sin);
+    return std::make_shared<ov::Model>(out, ov::ParameterVector{x, cos, sin});
 }
 
-TEST(vllm_gating, rope_pass_applied_with_vllm_model_flag) {
-    auto model = build_vllm_rope_model();
-    model->set_rt_info(true, "vllm_model");
-    ov::pass::Manager manager;
+}  // namespace
+
+// Without the flag the model must come out of CommonOptimizations unchanged
+// (model_ref defaults to a copy of the input model).
+TEST_F(TransformationTestsF, VLLMGatingRoPEPassSkippedWithoutVLLMModelFlag) {
+    model = build_vllm_rope_model();
     manager.register_pass<ov::pass::CommonOptimizations>();
-    manager.run_passes(model);
-    // NormalizeVLLMRoPE applied: Split replaced by VariadicSplit.
-    EXPECT_EQ(count_of_type(model, ov::op::v1::Split::get_type_info_static()), 0u);
-    EXPECT_EQ(count_of_type(model, ov::op::v1::VariadicSplit::get_type_info_static()), 1u);
+}
+
+TEST_F(TransformationTestsF, VLLMGatingRoPEPassAppliedWithVLLMModelFlag) {
+    // NormalizeVLLMRoPE's copy_runtime_info() omits some new nodes (see normalize_vllm_rope_test.cpp).
+    disable_rt_info_check();
+    model = build_vllm_rope_model();
+    model->set_rt_info(true, "vllm_model");
+    manager.register_pass<ov::pass::CommonOptimizations>();
+    model_ref = build_normalized_rope_model();
 }

@@ -24,6 +24,13 @@ void QKVProjectionNode::validate_and_infer_types() {
                           ishape.rank().is_static() && (ishape.rank() == 2 || ishape.rank() == 3),
                           "feature shape rank must be 2 or 3");
     NODE_VALIDATION_CHECK(this, itype.is_real(), "feature data type must be real");
+    // The executor takes K from the weights, so a mismatched runtime feature size must be rejected here.
+    NODE_VALIDATION_CHECK(this,
+                          ishape[ishape.size() - 1].compatible(m_config.hidden_size),
+                          "feature size ",
+                          ishape[ishape.size() - 1],
+                          " does not match hidden_size ",
+                          m_config.hidden_size);
 
     set_output_size(3);
 

@@ -196,7 +196,13 @@ ov::intel_cpu::QKVProjFusionPass2::QKVProjFusionPass2() {
     MATCHER_SCOPE(QKVProjFusionPass2);
 
     // QKVProjection flattens all leading dims into M, so a flattened [tokens, hidden] input works as well.
-    auto input = pattern::any_input(pattern::rank_equals(2) || pattern::rank_equals(3));
+    // The weight Convert is optional, so integer MatMuls would match too; QKVProjectionNode only takes real features.
+    const auto is_real = pattern::op::Predicate(
+        [](const Output<Node>& output) {
+            return output.get_element_type().is_real();
+        },
+        "is_real");
+    auto input = pattern::any_input((pattern::rank_equals(2) || pattern::rank_equals(3)) && is_real);
 
     // [q + k + v, hidden]: a vector weight would make this a matrix-vector product
     auto qkv_proj_weight_const = pattern::wrap_type<op::v0::Constant>(pattern::rank_equals(2));
@@ -225,11 +231,6 @@ ov::intel_cpu::QKVProjFusionPass2::QKVProjFusionPass2() {
     matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](ov::pass::pattern::Matcher& m) {
         const auto& pattern_map = m.get_pattern_value_map();
         auto root = m.get_match_root();
-
-        // the Convert is optional, so integer MatMuls match as well; QKVProjectionNode only takes real features
-        if (!pattern_map.at(input).get_element_type().is_real()) {
-            return false;
-        }
 
         const auto vsplit = pattern_map.at(qkv_split).get_node_shared_ptr();
         const auto& rank = vsplit->get_input_partial_shape(0).rank();

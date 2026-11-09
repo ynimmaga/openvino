@@ -167,6 +167,23 @@ TEST(QKVProjectionNodeTest, UnsupportedRankThrows) {
     }
 }
 
+// The executor takes K from the weights, so a feature size other than hidden_size must be rejected, also when a
+// dynamic one only becomes known at runtime (CPU shape inference re-runs validate_and_infer_types).
+TEST(QKVProjectionNodeTest, HiddenSizeMismatchThrows) {
+    const intel_cpu::QKVProjectionNode::Config config{false, static_cast<int>(hidden_size), 2048, 256, 256, true};
+    auto w = make_weight(element::f16, Shape{2560, hidden_size});
+
+    auto input = std::make_shared<v0::Parameter>(element::f32, PartialShape{-1, static_cast<int64_t>(hidden_size / 2)});
+    EXPECT_THROW(std::ignore = std::make_shared<intel_cpu::QKVProjectionNode>(OutputVector{input, w, w, w}, config),
+                 ov::NodeValidationFailure);
+
+    auto dyn_input = std::make_shared<v0::Parameter>(element::f32, PartialShape{-1, -1});
+    auto qkv = std::make_shared<intel_cpu::QKVProjectionNode>(OutputVector{dyn_input, w, w, w}, config);
+    dyn_input->set_partial_shape(PartialShape{1, static_cast<int64_t>(hidden_size / 2)});
+    dyn_input->validate_and_infer_types();
+    EXPECT_THROW(qkv->validate_and_infer_types(), ov::NodeValidationFailure);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // QKVProjFusionPass1: three MatMuls on the same input
 

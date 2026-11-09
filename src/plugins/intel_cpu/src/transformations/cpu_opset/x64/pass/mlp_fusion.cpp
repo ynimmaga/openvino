@@ -59,7 +59,8 @@ ov::intel_cpu::MLPFusionPass::MLPFusionPass() {
     using ov::op::v7::Gelu;
 
     // LLMMLP flattens all leading dims into M, so a flattened [tokens, hidden] input works as well.
-    auto input = any_input(rank_equals(2) || rank_equals(3));
+    // LLMMLPNode needs a static feature (hidden) size; the weights don't make the input's static.
+    auto input = any_input((rank_equals(2) && has_static_dim(1)) || (rank_equals(3) && has_static_dim(2)));
 
     auto gate_proj_weight_compressed = wrap_type<Constant>();  // [up_size, down_size]
     auto gate_proj_weight = optional<Convert>(gate_proj_weight_compressed, {{"destination_type", "f32"}});
@@ -169,11 +170,6 @@ ov::intel_cpu::MLPFusionPass::MLPFusionPass() {
         auto src = pattern_map.at(input);
         if (!src.get_element_type().is_real()) {
             // FakeQuantize, should skip fusion
-            return false;
-        }
-        // LLMMLPNode needs a static feature (hidden) size; the weights don't make the input's static.
-        const auto& src_shape = src.get_partial_shape();
-        if (src_shape.rank().is_dynamic() || src_shape[src_shape.size() - 1].is_dynamic()) {
             return false;
         }
         Output<Node> gate_proj_w;
