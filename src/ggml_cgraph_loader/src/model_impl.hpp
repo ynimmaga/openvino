@@ -151,6 +151,10 @@ struct GgmlModel::Impl {
         // Every external may be shared with the base model, leaving nothing to allocate here.
         if (ggml_get_first_tensor(ctx_ext)) {
             ebuf = ggml_backend_alloc_ctx_tensors(ctx_ext, backend);
+            // Backend memory is not cleared, and an input no runner writes must still hold valid indices.
+            if (ebuf) {
+                ggml_backend_buffer_clear(ebuf, 0);
+            }
         }
         gf = ggml_new_graph_custom(ctx_g, MAX_NODES, false);
         if (out.order.empty()) {
