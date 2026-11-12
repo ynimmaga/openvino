@@ -116,6 +116,9 @@ struct GgmlModel::Impl {
         gg = gguf_init_from_file(gguf_path.c_str(), gp);
         OPENVINO_ASSERT(gg, "[GGML] cannot read gguf: ", gguf_path);
         wbuf = ggml_backend_alloc_ctx_tensors(wctx, backend);
+        // A failed allocation leaves the tensors of the chunks it already freed pointing at them.
+        OPENVINO_ASSERT(wbuf || !ggml_get_first_tensor(wctx), "[GGML] not enough memory on ",
+                        ggml_backend_name(backend), " for the weights of ", gguf_path);
         FILE* f = fopen(gguf_path.c_str(), "rb");
         OPENVINO_ASSERT(f, "[GGML] cannot open: ", gguf_path);
         const size_t doff = gguf_get_data_offset(gg);
@@ -151,6 +154,10 @@ struct GgmlModel::Impl {
         // Every external may be shared with the base model, leaving nothing to allocate here.
         if (ggml_get_first_tensor(ctx_ext)) {
             ebuf = ggml_backend_alloc_ctx_tensors(ctx_ext, backend);
+            OPENVINO_ASSERT(ebuf, "[GGML] not enough memory on ", ggml_backend_name(backend),
+                            " for the KV caches and graph inputs");
+            // Backend memory is not cleared, and an input no runner writes must still hold valid indices.
+            ggml_backend_buffer_clear(ebuf, 0);
         }
         gf = ggml_new_graph_custom(ctx_g, MAX_NODES, false);
         if (out.order.empty()) {

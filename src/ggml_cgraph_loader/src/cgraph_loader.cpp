@@ -676,8 +676,9 @@ struct Loader {
             } else if (op == "GGML_OP_SET_ROWS") {
                 // One index leaf per cache (K and V, and again for a sliding-window cache): number
                 // them all so each gets its own name; the caller writes every "inp_kv_idx*".
+                // llama.cpp's mixed token/embedding path uses SET_ROWS too; its slots index the batch.
                 const std::string id = ins[1];
-                if (by_id.count(id) && !role.count(id)) {
+                if (by_id.count(id) && !role.count(id) && leaf_name[id].rfind("inp_mixed", 0) != 0) {
                     role[id] = n_setrows == 0 ? "inp_kv_idx" : "inp_kv_idx_" + std::to_string(n_setrows);
                     n_setrows++;
                 }
