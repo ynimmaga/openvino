@@ -20,6 +20,7 @@ public:
     void infer(const TensorMap& inputs, const TensorMap& outputs) override;
     std::vector<ov::SoPtr<ov::IVariableState>> states() const override;
     std::string backend_name() const override;
+    ov::AnyMap properties() const override;
 
 private:
     struct Rows {
@@ -31,6 +32,7 @@ private:
     };
 
     void forward(const Rows& rows, const GraphSet::Graph& graph);
+    size_t kv_capacity() const;  // usable slots; sequences past this wrap around the ring
 
     GraphSet m_graphs;
     std::shared_ptr<GgmlModel> m_active;  // graph that ran last (holds the logits)
@@ -38,7 +40,7 @@ private:
     size_t m_hidden = 0;
     size_t m_vocab = 0;
     size_t m_scratch_slots = 0;
-    size_t m_cached = 0;  // tokens currently held in the KV cache
+    size_t m_cached = 0;  // tokens ever sent (absolute length; slots are S + index % kv_capacity)
     // Recurrent layers (Mamba / RWKV / linear attention) fold every token into a state that cannot
     // be rewound: a new sequence zeroes it, and it never sees padding rows.
     bool m_recurrent = false;

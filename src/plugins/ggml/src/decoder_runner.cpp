@@ -103,6 +103,17 @@ std::string DecoderRunner::backend_name() const {
     return m_graphs.main().backend_name();
 }
 
+size_t DecoderRunner::kv_capacity() const {
+    // Usable KV slots: once a sequence passes this many, slots wrap around the ring
+    // (llama.cpp --ctx-shift semantics: the oldest positions are evicted).
+    return m_graphs.max_n_kv() - m_scratch_slots;
+}
+
+ov::AnyMap DecoderRunner::properties() const {
+    // Informational: a hard limit for recurrent models, the visible-window size for the ring.
+    return {{"GGML_KV_CAPACITY", static_cast<uint64_t>(kv_capacity())}};
+}
+
 void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
     auto& model = graph.model;
     m_active = model;
@@ -113,6 +124,7 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
     // M-RoPE: the sections are stored one after another; a text token repeats its position in the first
     // three and has 0 in a fourth.
     const size_t n_pos = GraphSet::positions_per_token(*model);
+    const size_t U = kv_capacity();
     std::vector<int32_t> pos(bucket * n_pos, 0);
     std::vector<int64_t> slot(bucket, 0);
     for (size_t i = 0; i < chunk; i++) {
@@ -120,7 +132,9 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
             // llama.cpp: a text token's four M-RoPE streams are [pos, pos, pos, 0]
             pos[j * bucket + i] = (n_pos == 4 && j == 3) ? 0 : rows.positions[i];
         }
-        slot[i] = static_cast<int64_t>(m_scratch_slots + rows.first_index + i);
+        // Ring: positions are absolute, slots wrap once the sequence outgrows the cache.
+        const size_t q = rows.first_index + i;
+        slot[i] = static_cast<int64_t>(m_scratch_slots + q % U);
     }
     for (size_t i = chunk; i < bucket; i++) {
         slot[i] = static_cast<int64_t>(i - chunk);
@@ -189,7 +203,10 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
             model->write_input(name, slot.data(), slot.size() * sizeof(int64_t));
         } else if (is_mask_input(name)) {
             // Row r (sequence index first_index + r) sees every earlier token the attention mask
-            // keeps; a padding row sees only its own scratch slot.
+            // keeps; a padding row sees only its own scratch slot. Under the ring, only the last U
+            // positions keep cells -- older positions are evicted and stay -inf in the freshly
+            // initialised buffer. (With sliding-window masks (#103) a row sees the intersection
+            // [q-U+1, q] ∩ [q-window+1, q] -- the window bound and c0 below compose by max().)
             std::vector<uint16_t> mask(model->input_size(name), FP16_NEG_INF);
             for (size_t r = 0; r < bucket; r++) {
                 uint16_t* row = mask.data() + r * graph.n_kv;
@@ -198,9 +215,10 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
                     continue;
                 }
                 const size_t q = rows.first_index + r;
-                for (size_t c = 0; c <= q; c++) {
+                const size_t c0 = q >= U ? q - U + 1 : 0;
+                for (size_t c = c0; c <= q; c++) {
                     if (rows.mask[c] != 0) {
-                        row[m_scratch_slots + c] = alibi ? to_half(-static_cast<float>(q - c)) : 0;
+                        row[m_scratch_slots + c % U] = alibi ? to_half(-static_cast<float>(q - c)) : 0;
                     }
                 }
             }
@@ -240,15 +258,21 @@ void DecoderRunner::infer(const TensorMap& inputs, const TensorMap& outputs) {
             m_graphs.main().zero_recurrent_state();
         }
     }
-    const size_t usable = m_graphs.max_n_kv() - m_scratch_slots;
-    OPENVINO_ASSERT(total <= usable,
-                    "[GGML] sequence length ",
-                    total,
-                    " exceeds the largest context the artifacts were dumped for (",
-                    usable,
-                    " usable of ",
-                    m_graphs.max_n_kv(),
-                    " slots); re-dump with a larger n_kv");
+    const size_t usable = kv_capacity();
+    if (m_recurrent) {
+        // Folded recurrent state cannot be evicted from a ring; llama.cpp also cannot serve past
+        // the context for these models.
+        OPENVINO_ASSERT(total <= usable,
+                        "[GGML] sequence length ",
+                        total,
+                        " exceeds the recurrent artifact's context (",
+                        usable,
+                        " usable of ",
+                        m_graphs.max_n_kv(),
+                        " slots); re-dump with a larger n_kv");
+    }
+    // Non-recurrent: sequences longer than `usable` wrap around the ring (llama.cpp --ctx-shift
+    // semantics) -- the oldest positions are evicted and masked out.
 
     if (auto it = inputs.find("beam_idx"); it != inputs.end() && it->second->get_size() > 0) {
         OPENVINO_ASSERT(it->second->get_size() == 1 && static_cast<const int32_t*>(it->second->data())[0] == 0,
@@ -278,7 +302,9 @@ void DecoderRunner::infer(const TensorMap& inputs, const TensorMap& outputs) {
     while (done < n_new) {
         const size_t first = past + done;
         const auto& graph = m_graphs.pick(n_new - done, [&](size_t rows) {
-            return m_scratch_slots + first + rows;
+            // The ring needs at most U slots; once `first` passes U, only the full-width graph
+            // (n_kv == max_n_kv) covers the wrapped cells.
+            return m_scratch_slots + std::min(first + rows, usable);
         });
         const size_t chunk = std::min(n_new - done, graph.tokens);
         Rows rows;
