@@ -141,7 +141,7 @@ std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::filesystem:
     if (!base) {
         remember_weights(config, result.model);
     }
-    return std::make_shared<CompiledModel>(std::move(result.runner), shared_from_this());
+    return std::make_shared<CompiledModel>(std::move(result), model_path, cfg, shared_from_this());
 }
 
 std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::shared_ptr<const ov::Model>&,
@@ -217,15 +217,14 @@ ov::SupportedOpsMap Plugin::query_model(const std::shared_ptr<const ov::Model>&,
 
 // --------------------------------------------------------------------------------------- CompiledModel
 
-CompiledModel::CompiledModel(std::shared_ptr<Runner> runner, const std::shared_ptr<const ov::IPlugin>& plugin)
-    : CompiledModel(runner, make_signature(*runner), plugin) {}
-
-CompiledModel::CompiledModel(std::shared_ptr<Runner> runner,
-                             std::shared_ptr<const ov::Model> signature,
+CompiledModel::CompiledModel(RunnerResult result, std::filesystem::path artifact, RunnerConfig config,
                              const std::shared_ptr<const ov::IPlugin>& plugin)
-    : ov::ICompiledModel(signature, plugin),
-      m_runner(std::move(runner)),
-      m_signature(std::move(signature)) {}
+    : ov::ICompiledModel(make_signature(*result.runner), plugin),
+      m_template_runner(std::move(result.runner)),
+      m_signature(make_signature(*m_template_runner)),
+      m_artifact(std::move(artifact)),
+      m_config(std::move(config)),
+      m_template(std::move(result.model)) {}
 
 std::shared_ptr<ov::ISyncInferRequest> CompiledModel::create_sync_infer_request() const {
     return std::make_shared<InferRequest>(std::static_pointer_cast<const CompiledModel>(shared_from_this()));
@@ -242,7 +241,7 @@ std::shared_ptr<const ov::Model> CompiledModel::get_runtime_model() const {
 void CompiledModel::set_property(const ov::AnyMap&) {}
 
 ov::Any CompiledModel::get_property(const std::string& name) const {
-    const auto runner_properties = m_runner->properties();
+    const auto runner_properties = m_template_runner->properties();
     if (name == ov::supported_properties.name()) {
         std::vector<ov::PropertyName> names{ov::supported_properties,
                                             ov::model_name,
@@ -265,7 +264,7 @@ ov::Any CompiledModel::get_property(const std::string& name) const {
     } else if (name == ov::optimal_number_of_infer_requests.name()) {
         return 1u;
     } else if (name == "GGML_BACKEND") {
-        return m_runner->backend_name();
+        return m_template_runner->backend_name();
     }
     OPENVINO_THROW("[GGML] unsupported compiled model property ", name);
 }
@@ -273,8 +272,10 @@ ov::Any CompiledModel::get_property(const std::string& name) const {
 // ---------------------------------------------------------------------------------------- InferRequest
 
 InferRequest::InferRequest(const std::shared_ptr<const CompiledModel>& compiled_model)
-    : ov::ISyncInferRequest(compiled_model),
-      m_runner(compiled_model->runner()) {
+    : ov::ISyncInferRequest(compiled_model) {
+    OPENVINO_ASSERT(compiled_model->shares_upload(),
+                    "[GGML] the compiled model kept no weight upload to build a per-request runner over");
+    m_runner = make_runner(compiled_model->artifact(), compiled_model->config(), compiled_model->template_model()).runner;
     for (const auto& port : get_inputs()) {
         allocate_tensor(port, [&port](ov::SoPtr<ov::ITensor>& tensor) {
             tensor = ov::make_tensor(port.get_element_type(), empty_shape(port.get_partial_shape()));
