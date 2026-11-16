@@ -81,7 +81,13 @@ RunnerResult make_runner(const std::filesystem::path& artifact, const RunnerConf
         return {std::move(runner), std::move(model)};
     }
     if (has("KQ_mask") && has("position")) {
-        auto runner = std::make_shared<WhisperDecoderRunner>(model, config);
+        OPENVINO_ASSERT(!config.cross.empty(),
+                        "[GGML] the whisper decoder needs GGML_CROSS (whisper.cross.json from dump_whisper SPLIT_CROSS=1)");
+        // The cross graph weighs the same GGUF as the decoder: share its upload (the decoder
+        // uploaded on a miss, or the registry base already held it) and keep separate caches --
+        // project_cross round-trips its own cross K/V per audio window.
+        auto cross = GgmlModel::from_cgraph(config.cross.string(), model, GgmlModel::CacheMode::Fresh);
+        auto runner = std::make_shared<WhisperDecoderRunner>(model, std::move(cross));
         return {std::move(runner), std::move(model)};
     }
     if (has("inp_raw")) {
