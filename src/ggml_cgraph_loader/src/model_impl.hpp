@@ -71,6 +71,8 @@ struct GgmlModel::Impl {
     /// shared caches belong to it, and this keeps it alive.
     std::shared_ptr<GgmlModel> base;
     std::set<ggml_tensor*> shared_caches;
+    /// from_cgraph(json, base, CacheMode::Fresh): weights come from base, every cache is own.
+    bool fresh_caches = false;
     bool alibi = false;  // some attention node has max_bias > 0
     /// Set when some op cannot run on `backend` (e.g. a kernel the GPU backend lacks for these
     /// shapes): the scheduler then runs just those ops on the CPU backend, as llama.cpp does.

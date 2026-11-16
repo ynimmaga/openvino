@@ -104,7 +104,7 @@ struct Loader {
     // The base model's KV cache of this name if this graph is built over one: the cache itself,
     // or a view of its first ne[1] slots for a graph dumped with a smaller n_kv.
     ggml_tensor* base_cache(const std::string& name, ggml_type type, const std::vector<int64_t>& ne) const {
-        if (!im.base || name.rfind("cache_", 0) != 0) {
+        if (!im.base || im.fresh_caches || name.rfind("cache_", 0) != 0) {
             return nullptr;
         }
         const auto& ext = im.base->externals();
@@ -777,10 +777,12 @@ std::shared_ptr<GgmlModel> GgmlModel::from_cgraph(const std::string& cgraph_json
 }
 
 std::shared_ptr<GgmlModel> GgmlModel::from_cgraph(const std::string& cgraph_json,
-                                                  const std::shared_ptr<GgmlModel>& base) {
+                                                  const std::shared_ptr<GgmlModel>& base,
+                                                  CacheMode cache_mode) {
     OPENVINO_ASSERT(base, "[GGML] from_cgraph: base model is null");
     const json doc = read_artifact(cgraph_json);
     std::shared_ptr<GgmlModel> model(new GgmlModel());
+    model->m_impl->fresh_caches = cache_mode == CacheMode::Fresh;
     model->m_impl->share_from(base, *base->m_impl);
     build(*model->m_impl, doc);
     return model;

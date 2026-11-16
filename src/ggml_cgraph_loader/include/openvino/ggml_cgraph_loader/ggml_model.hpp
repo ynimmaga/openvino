@@ -44,13 +44,24 @@ public:
     static std::shared_ptr<GgmlModel> from_cgraph(const std::string& cgraph_json,
                                                   const std::string& gguf_path,
                                                   const std::string& backend_name = "");
+
+    /// How a graph built over `base` treats the KV / state caches.
+    enum class CacheMode {
+        Shared,  // bind matching caches to base's (same device buffer, no copying)
+        Fresh,   // allocate this graph's own caches; the weights are still shared
+    };
+
     /// Another graph over the same model -- e.g. a different token count or context size -- reusing
-    /// `base`'s backend, uploaded weights and KV caches. A "cache_*" leaf of matching name and type
-    /// binds to base's cache, or to a view of its first slots when this graph was dumped for a
-    /// smaller n_kv (slots are rows of the cache, [row, n_kv]). The graphs then read and write one
-    /// cache with no copying, and the weights are held once.
+    /// `base`'s backend and uploaded weights. With CacheMode::Shared a "cache_*" leaf of matching
+    /// name and type binds to base's cache, or to a view of its first slots when this graph was
+    /// dumped for a smaller n_kv (slots are rows of the cache, [row, n_kv]); the graphs then read
+    /// and write one cache with no copying. Use Shared only when the graphs are steps of one
+    /// sequence; with CacheMode::Fresh every cache is this graph's own, so concurrent compiled
+    /// models never write into one buffer (e.g. whisper's cross-attention cache, which is a
+    /// separate host-round-tripped copy of the decoder's).
     static std::shared_ptr<GgmlModel> from_cgraph(const std::string& cgraph_json,
-                                                  const std::shared_ptr<GgmlModel>& base);
+                                                  const std::shared_ptr<GgmlModel>& base,
+                                                  CacheMode cache_mode = CacheMode::Shared);
 
     ~GgmlModel();
 
