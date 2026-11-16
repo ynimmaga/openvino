@@ -4,7 +4,10 @@
 
 #include "plugin.hpp"
 
+#include <filesystem>
+
 #include "openvino/core/model.hpp"
+#include "openvino/ggml_cgraph_loader/ggml_model.hpp"
 #include "openvino/op/op.hpp"
 #include "openvino/op/parameter.hpp"
 #include "openvino/op/result.hpp"
@@ -73,14 +76,72 @@ Plugin::Plugin() {
     set_device_name("GGML");
 }
 
+namespace {
+// The same GGUF on the same backend gets one upload; a different spelling of the path or an
+// empty backend name (auto) means a separate entry, which is conservative, never wrong.
+std::string weights_key(const ov::AnyMap& config) {
+    const auto w = config.find("GGML_WEIGHTS");
+    if (w == config.end()) {
+        return {};
+    }
+    std::error_code ec;
+    std::filesystem::path p = std::filesystem::weakly_canonical(
+        std::filesystem::path(w->second.as<std::string>()), ec);
+    if (ec) {
+        p = std::filesystem::absolute(w->second.as<std::string>());
+    }
+    std::string backend;
+    if (const auto b = config.find("GGML_BACKEND"); b != config.end()) {
+        backend = b->second.as<std::string>();
+    }
+    return p.string() + "|" + backend;
+}
+}  // namespace
+
+std::shared_ptr<ggml_cgraph_loader::GgmlModel> Plugin::weights_base(const ov::AnyMap& config) const {
+    const std::string key = weights_key(config);
+    if (key.empty()) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(m_weights_mutex);
+    const auto it = m_weights.find(key);
+    if (it == m_weights.end()) {
+        return nullptr;
+    }
+    if (auto base = it->second.lock()) {
+        return base;
+    }
+    m_weights.erase(it);  // expired: the compiled models that owned it are gone
+    return nullptr;
+}
+
+void Plugin::remember_weights(const ov::AnyMap& config,
+                              const std::shared_ptr<ggml_cgraph_loader::GgmlModel>& model) const {
+    const std::string key = weights_key(config);
+    if (key.empty() || !model) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_weights_mutex);
+    auto& entry = m_weights[key];
+    if (entry.lock()) {
+        return;  // another thread uploaded first; its base stays
+    }
+    entry = model;
+}
+
 std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::filesystem::path& model_path,
                                                           const ov::AnyMap& properties) const {
     ov::AnyMap config = m_config;
     for (const auto& [k, v] : properties) {
         config[k] = v;
     }
-    auto runner = make_runner(model_path, RunnerConfig::parse(config));
-    return std::make_shared<CompiledModel>(std::move(runner), shared_from_this());
+    const RunnerConfig cfg = RunnerConfig::parse(config);
+    const auto base = weights_base(config);
+    auto result = make_runner(model_path, cfg, base);
+    if (!base) {
+        remember_weights(config, result.model);
+    }
+    return std::make_shared<CompiledModel>(std::move(result.runner), shared_from_this());
 }
 
 std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::shared_ptr<const ov::Model>&,
