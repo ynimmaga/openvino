@@ -205,8 +205,12 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
             // Row r (sequence index first_index + r) sees every earlier token the attention mask
             // keeps; a padding row sees only its own scratch slot. Under the ring, only the last U
             // positions keep cells -- older positions are evicted and stay -inf in the freshly
-            // initialised buffer. (With sliding-window masks (#103) a row sees the intersection
+            // initialised buffer. A multi-row chunk that spans the wrap point also overwrites the
+            // cells of its own prefix: positions below first + chunk - U are replaced by this
+            // chunk's rows BEFORE the compute, so every row of the chunk must mask them too.
+            // (With sliding-window masks (#103) a row sees the intersection
             // [q-U+1, q] ∩ [q-window+1, q] -- the window bound and c0 below compose by max().)
+            const size_t chunk_evict = rows.first_index + chunk > U ? rows.first_index + chunk - U : 0;
             std::vector<uint16_t> mask(model->input_size(name), FP16_NEG_INF);
             for (size_t r = 0; r < bucket; r++) {
                 uint16_t* row = mask.data() + r * graph.n_kv;
@@ -215,7 +219,8 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
                     continue;
                 }
                 const size_t q = rows.first_index + r;
-                const size_t c0 = q >= U ? q - U + 1 : 0;
+                const size_t ring_low = q >= U ? q - U + 1 : 0;
+                const size_t c0 = std::max(ring_low, chunk_evict);
                 for (size_t c = c0; c <= q; c++) {
                     if (rows.mask[c] != 0) {
                         row[m_scratch_slots + c % U] = alibi ? to_half(-static_cast<float>(q - c)) : 0;
@@ -223,6 +228,16 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
                 }
             }
             model->write_input(name, mask.data(), mask.size() * sizeof(uint16_t));
+            // GGML_DUMP_MASK=<dir>: write this mask input to <dir>/<name>.bin after each
+            // forward (the last forward wins), so a test can compare the replay's mask against
+            // llama.cpp's own values (the generator's REF_OUT .inputs).
+            if (const char* d = std::getenv("GGML_DUMP_MASK")) {
+                std::string p = std::string(d) + "/" + name + ".bin";
+                if (FILE* f = fopen(p.c_str(), "wb")) {
+                    fwrite(mask.data(), sizeof(uint16_t), mask.size(), f);
+                    fclose(f);
+                }
+            }
         }
     }
     OPENVINO_ASSERT(model->compute(), "[GGML] decoder compute failed at index ", rows.first_index);
