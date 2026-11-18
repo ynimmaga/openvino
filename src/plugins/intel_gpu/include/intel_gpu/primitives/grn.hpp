@@ -26,7 +26,7 @@ struct grn : public primitive_base<grn> {
     {}
 
     /// @brief Bias value for whole output tensor.
-    float bias = 0.0f;
+    float bias = 0.0F;
 
     size_t hash() const override {
         size_t seed = primitive::hash();
@@ -35,8 +35,9 @@ struct grn : public primitive_base<grn> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const grn>(rhs);
 

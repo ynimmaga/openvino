@@ -147,12 +147,13 @@ protected:
         return args;
     }
 
-    std::vector<BufferDescriptor> get_internal_buffer_descs(const kernel_impl_params&) const override {
+    std::vector<BufferDescriptor> get_internal_buffer_descs(const kernel_impl_params& /*unused*/) const override {
         std::vector<BufferDescriptor> internal_buffers;
         if (_kernel_data.params != nullptr) {
             const auto& prim_params = static_cast<const kernel_selector::border_params&>(*_kernel_data.params);
-            if (prim_params.inputs[0].LogicalSize() == 0)
+            if (prim_params.inputs[0].LogicalSize() == 0) {
                 internal_buffers.emplace_back(1, ov::element::u8);
+            }
         }
 
         return internal_buffers;

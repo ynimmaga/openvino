@@ -43,6 +43,10 @@ ContextType get_default_context_type() {
         return ContextType::ZE;
     #elif defined(OV_GPU_WITH_OCL_RT)
         return ContextType::OCL;
+    #elif defined(OV_GPU_WITH_SYCL_RT)
+        // TODO: return OCL or ZE ContextType according to the underlying SYCL backend.
+        // OCL is used as a placeholder for now.
+        return ContextType::OCL;
     #else
         #error "Expected OpenVINO GPU runtime macros to be defined"
     #endif
@@ -68,6 +72,10 @@ RemoteContextImpl::RemoteContextImpl(const std::string& device_name, std::vector
 }
 
 RemoteContextImpl::RemoteContextImpl(const std::map<std::string, RemoteContextImpl::Ptr>& known_contexts, const AnyMap& params) {
+#ifdef OV_GPU_WITH_SYCL_RT
+    // TODO: enable shared RemoteContext for SYCL_RT once SYCL interop is wired up.
+    OPENVINO_THROW("[GPU] Shared RemoteContext is not supported with SYCL runtime yet");
+#endif
     gpu_handle_param context_id = nullptr;
     int ctx_device_id = 0;
     int target_tile_id = -1;
@@ -84,8 +92,9 @@ RemoteContextImpl::RemoteContextImpl(const std::map<std::string, RemoteContextIm
                 m_external_queue = extract_object(params, ov::intel_gpu::ocl_queue);
             }
 
-            if (params.find(ov::intel_gpu::ocl_context_device_id.name()) != params.end())
+            if (params.find(ov::intel_gpu::ocl_context_device_id.name()) != params.end()) {
                 ctx_device_id = extract_object(params, ov::intel_gpu::ocl_context_device_id);
+            }
         } else if (ctx_type == ov::intel_gpu::ContextType::VA_SHARED) {
             m_va_display = extract_object(params, ov::intel_gpu::va_device);
             OPENVINO_ASSERT(m_va_display != nullptr, "[GPU] Can't create shared VA/DX context as user handle is nullptr! Params:\n", params);
@@ -125,6 +134,11 @@ const cldnn::engine& RemoteContextImpl::get_engine() const {
 }
 
 void RemoteContextImpl::init_properties() {
+#ifdef OV_GPU_WITH_SYCL_RT
+    // TODO: populate SYCL-backed RemoteContext properties once SYCL interop is wired up.
+    // SYCL engine exposes no OCL/ZE user-context handles; leave properties empty (RemoteTensor is blocked separately).
+    return;
+#endif
     switch (m_type) {
     case ContextType::OCL:
         properties.insert(ov::intel_gpu::context_type(ov::intel_gpu::ContextType::OCL));
@@ -156,7 +170,7 @@ std::shared_ptr<RemoteContextImpl> RemoteContextImpl::get_this_shared_ptr() {
 
 ov::SoPtr<ov::ITensor> RemoteContextImpl::create_host_tensor(const ov::element::Type type, const ov::Shape& shape) {
     OPENVINO_ASSERT(m_is_initialized, "[GPU] create_host_tensor() called on uninitialized context. Please initialize the context before use");
-    if (m_engine->use_unified_shared_memory()) {
+    if (type != ov::element::string && m_engine->use_unified_shared_memory()) {
         return { std::make_shared<USMHostTensor>(get_this_shared_ptr(), type, shape), nullptr };
     }
     return {ov::make_tensor(type, shape), nullptr};
@@ -233,8 +247,7 @@ ov::SoPtr<ov::IRemoteTensor> RemoteContextImpl::create_tensor(const ov::element:
 }
 
 // For external contexts we try to match underlying handles with default contexts created by plugin to find device name
-std::string RemoteContextImpl::get_device_name(const std::map<std::string, RemoteContextImpl::Ptr>& known_contexts,
-                                               const cldnn::device::ptr current_device) const {
+std::string RemoteContextImpl::get_device_name(const std::map<std::string, RemoteContextImpl::Ptr>& known_contexts, const cldnn::device::ptr current_device) {
     std::string device_name = "GPU";
     for (const auto& c : known_contexts) {
         if (c.second->m_device->is_same(current_device)) {
@@ -251,9 +264,17 @@ const std::string& RemoteContextImpl::get_device_name() const {
 
 cldnn::memory::ptr RemoteContextImpl::try_get_cached_memory(size_t hash) {
     std::lock_guard<std::mutex> lock(m_cache_mutex);
-    if (m_memory_cache.has(hash))
-        return m_memory_cache.get(hash);
+    if (!m_memory_cache.has(hash)) {
+        return nullptr;
+    }
 
+    auto cached_memory = m_memory_cache.get(hash);
+    if (auto memory = cached_memory.lock()) {
+        return memory;
+    }
+
+    // The last tensor which wrapped that memory is gone, so the entry is erased instead of being kept as the most recently used one
+    m_memory_cache.erase(hash);
     return nullptr;
 }
 

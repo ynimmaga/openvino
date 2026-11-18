@@ -47,7 +47,8 @@ FullyConnectedConvertFusion::FullyConnectedConvertFusion() {
                                                           m_weights,
                                                           m_bias,
                                                           output_type,
-                                                          m_fc_typed->get_transpose_b());
+                                                          m_fc_typed->get_transpose_b(),
+                                                          m_fc_typed->get_weights_layout());
 
         } else {
             m_fc = pattern_map.at(fully_connected_compressed).get_node_shared_ptr();
@@ -55,21 +56,28 @@ FullyConnectedConvertFusion::FullyConnectedConvertFusion() {
             OPENVINO_ASSERT(m_fc_typed);
 
 
-            if (m_fc->input_values().size() == 4)
+            if (m_fc->input_values().size() == 4) {
                 new_fc = std::make_shared<op::FullyConnectedCompressed>(m_fc->input_value(0),
                                                                         m_weights,
                                                                         m_bias,
                                                                         m_fc->input_value(3),
                                                                         output_type,
-                                                                        m_fc_typed->get_transpose_b());
-            else
+                                                                        m_fc_typed->get_transpose_b(),
+                                                                        m_fc_typed->get_transpose_b_scale(),
+                                                                        m_fc_typed->get_transpose_b_zp(),
+                                                                        m_fc_typed->get_weights_layout());
+            } else {
                 new_fc = std::make_shared<op::FullyConnectedCompressed>(m_fc->input_value(0),
                                                                         m_weights,
                                                                         m_bias,
                                                                         m_fc->input_value(3),
                                                                         m_fc->input_value(4),
                                                                         output_type,
-                                                                        m_fc_typed->get_transpose_b());
+                                                                        m_fc_typed->get_transpose_b(),
+                                                                        m_fc_typed->get_transpose_b_scale(),
+                                                                        m_fc_typed->get_transpose_b_zp(),
+                                                                        m_fc_typed->get_weights_layout());
+            }
         }
         new_fc->set_friendly_name(m_convert->get_friendly_name());
         copy_runtime_info(m.get_matched_nodes(), new_fc);

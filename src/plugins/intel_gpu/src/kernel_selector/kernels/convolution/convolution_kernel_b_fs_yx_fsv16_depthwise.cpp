@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -48,21 +48,23 @@ DeviceFeaturesKey ConvolutionKernel_b_fs_yx_fsv16_depthwise::get_required_device
 bool ConvolutionKernel_b_fs_yx_fsv16_depthwise::Validate(const Params& p) const {
     const convolution_params& cp = static_cast<const convolution_params&>(p);
 
-    if (cp.groups == 1)
+    if (cp.groups == 1) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
-    if (cp.inputs[0].Feature().v != cp.groups || cp.outputs[0].Feature().v != cp.groups)
+    if (cp.inputs[0].Feature().v != cp.groups || cp.outputs[0].Feature().v != cp.groups) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     // Check that padding features doesn't miss-align the blocks
-    if (cp.inputs[0].Feature().pad.before % feature_block_size != 0 || cp.outputs[0].Feature().pad.before % feature_block_size != 0)
+    if (cp.inputs[0].Feature().pad.before % feature_block_size != 0 || cp.outputs[0].Feature().pad.before % feature_block_size != 0) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
 
-ConvolutionKernelBase::DispatchData ConvolutionKernel_b_fs_yx_fsv16_depthwise::SetDefault(const convolution_params& params,
-                                                                                          int) const {
+ConvolutionKernelBase::DispatchData ConvolutionKernel_b_fs_yx_fsv16_depthwise::SetDefault(const convolution_params& params, int /*autoTuneIndex*/) const {
     DispatchData dispatchData = Parent::SetDefault(params);
     const auto& out = params.outputs[0];
 

@@ -7,6 +7,7 @@
 #include <json_object.h>
 #include <slice_scatter_inst.h>
 
+#include <algorithm>
 #include <sstream>
 
 #include "primitive_type_base.h"
@@ -27,12 +28,15 @@ SliceScatterKernelRefNeededInputs SliceScatterKernelRefNeededInputs::Create(cons
     const bool step_in_runtime = !node_inputs[InputIndices::kStep].first->is_constant();
     const bool axes_in_runtime = ((node_inputs.size() > InputIndices::kAxes) && !node_inputs[InputIndices::kAxes].first->is_constant());
 
-    if (start_in_runtime)
+    if (start_in_runtime) {
         inputs.neededIndexes.push_back(InputIndices::kStart);
-    if (step_in_runtime)
+    }
+    if (step_in_runtime) {
         inputs.neededIndexes.push_back(InputIndices::kStep);
-    if (axes_in_runtime)
+    }
+    if (axes_in_runtime) {
         inputs.neededIndexes.push_back(InputIndices::kAxes);
+    }
 
     // NOTE: stop/end is never needed at runtime as it is passed implicitly via the updates shape.
 
@@ -40,11 +44,9 @@ SliceScatterKernelRefNeededInputs SliceScatterKernelRefNeededInputs::Create(cons
 }
 
 bool SliceScatterKernelRefNeededInputs::IsInputNeededInRuntime(InputIndices type) const {
-    for (const auto& idx : neededIndexes) {
-        if (idx == static_cast<size_t>(type))
-            return true;
-    }
-    return false;
+    return std::any_of(neededIndexes.begin(), neededIndexes.end(), [type](const auto& idx) {
+        return idx == static_cast<size_t>(type);
+    });
 }
 
 GPU_DEFINE_PRIMITIVE_TYPE_ID(slice_scatter)
@@ -64,16 +66,19 @@ void slice_scatter_inst::on_execute() {
 }
 
 void slice_scatter_inst::update_output_memory() {
-    if (!can_be_optimized() || _impl_params->is_dynamic())
+    if (!can_be_optimized() || _impl_params->is_dynamic()) {
         return;
+    }
 
     build_deps();
 
-    if (input_memory_ptr() == nullptr)
+    if (input_memory_ptr() == nullptr) {
         return;
+    }
 
-    if (!_outputs.empty() && static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory()))
+    if (!_outputs.empty() && static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory())) {
         return;
+    }
 
     if (static_cast<bool>(_outputs[0]) && get_node().get_program().get_config().get_enable_memory_pool()) {
         _network.get_memory_pool().release_memory(_outputs[0].get(), get_node().get_unique_id(), get_node().id(), _network.get_id());
@@ -87,7 +92,7 @@ layout slice_scatter_inst::calc_output_layout(const slice_scatter_node& node, co
 }
 
 template <typename ShapeType>
-inline std::vector<layout> slice_scatter_inst::calc_output_layouts(const slice_scatter_node&, const kernel_impl_params& impl_param) {
+inline std::vector<layout> slice_scatter_inst::calc_output_layouts(const slice_scatter_node& /*unused*/, const kernel_impl_params& impl_param) {
     std::vector<ShapeType> input_shapes;
     std::unordered_map<size_t, ov::Tensor> const_data;
 

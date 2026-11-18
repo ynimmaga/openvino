@@ -44,8 +44,9 @@ class memory_restricter {
         void insert(const Key& key) {
             if (ordered_keys_set1) {
                 auto it = std::lower_bound(ordered_keys_set1->begin(), ordered_keys_set1->end(), key);
-                if (it != ordered_keys_set1->end() && *it == key)
+                if (it != ordered_keys_set1->end() && *it == key) {
                     return;
+                }
             }
             auto it2 = std::lower_bound(ordered_keys_set2.begin(), ordered_keys_set2.end(), key);
             if (it2 == ordered_keys_set2.end() || *it2 != key) {
@@ -119,8 +120,9 @@ using memory_set = std::unordered_set<memory_user, memory_set_hasher>;
 
 struct memory_user_comparer {
     bool operator()(const memory_user& l_mu, const memory_user& r_mu) const {
-        if (l_mu._network_id != r_mu._network_id)
+        if (l_mu._network_id != r_mu._network_id) {
             return l_mu._network_id < r_mu._network_id;
+        }
         return l_mu._unique_id < r_mu._unique_id;
     }
 };
@@ -136,14 +138,18 @@ struct memory_record {
 
 struct padded_pool_comparer {
     bool operator()(const layout& ll, const layout& rl) const {
-        if (ll.format != rl.format)
+        if (ll.format != rl.format) {
             return ll.format < rl.format;
-        if (ll.data_type != rl.data_type)
+        }
+        if (ll.data_type != rl.data_type) {
             return ll.data_type < rl.data_type;
-        if (ll.spatial(0) != rl.spatial(0))
+        }
+        if (ll.spatial(0) != rl.spatial(0)) {
             return ll.spatial(0) < rl.spatial(0);
-        if (ll.spatial(1) != rl.spatial(1))
+        }
+        if (ll.spatial(1) != rl.spatial(1)) {
             return ll.spatial(1) < rl.spatial(1);
+        }
         return ll.data_padding < rl.data_padding;
     }
 };
@@ -168,13 +174,13 @@ struct padded_pool_comparer {
 
 class memory_pool {
     memory_ptr alloc_memory(const layout& layout, allocation_type type, bool reset = true);
-    static bool has_conflict(const memory_set&, const memory_restricter<uint32_t>&);
+    static bool has_conflict(const memory_set& /*mem_cand*/, const memory_restricter<uint32_t>& /*restrictions*/);
 
     std::multimap<uint64_t, memory_record> _non_padded_pool;
     std::map<layout, std::list<memory_record>, padded_pool_comparer> _padded_pool;
     engine* _engine;
     const ExecutionConfig& _config;
-    float _mem_pool_util_threshold = 0.5f;
+    float _mem_pool_util_threshold = 0.5F;
 
 public:
     explicit memory_pool(engine& engine, const ExecutionConfig& config);
@@ -193,7 +199,7 @@ public:
                                         const primitive_id& prim_id,
                                         size_t unique_id,
                                         uint32_t network_id,
-                                        const memory_restricter<uint32_t>&,
+                                        const memory_restricter<uint32_t>& /*restrictions*/,
                                         allocation_type type,
                                         bool reset = true,
                                         bool is_dynamic = false);
@@ -211,7 +217,7 @@ public:
     }
 
     void dump(uint32_t id, int64_t iter, std::string dump_dir_path = "");
-    size_t get_total_mem_pool_size(allocation_type type);
+    size_t get_total_mem_pool_size(allocation_type type) const;
 
 private:
     void dump_to_screen(uint32_t id, int64_t iter);

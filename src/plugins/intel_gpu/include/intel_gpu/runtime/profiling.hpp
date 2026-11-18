@@ -212,15 +212,18 @@ public:
         : _stage_name(stage_name)
         , _lifetime_logging_mode(lifetime_logging_mode)
         , _print_mem_usage(print_mem_usage) {
-        if (_lifetime_logging_mode)
+        if (_lifetime_logging_mode) {
             start_logging();
+        }
     }
 
     ~mem_usage_logger() {
-        if (_lifetime_logging_mode)
+        if (_lifetime_logging_mode) {
             stop_logging();
-        if (_print_mem_usage && _is_active)
+        }
+        if (_print_mem_usage && _is_active) {
             print_mem_usage_info();
+        }
     }
 
     void start_logging() {
@@ -232,7 +235,7 @@ public:
         _after = get_memory_footprint();
     }
 
-    memory_footprint get_elapsed_mem_usage() {
+    memory_footprint get_elapsed_mem_usage() const {
         return memory_footprint{ _after.rss - _before.rss, _after.peak_rss - _before.peak_rss };
     }
 
@@ -257,7 +260,7 @@ public:
         GPU_DEBUG_LOG << log_msg << std::endl;
     }
 
-    int64_t get_gpu_dedicated_vram_used_kb() {
+    static int64_t get_gpu_dedicated_vram_used_kb() {
 #if defined(_WIN32)
         using Microsoft::WRL::ComPtr;
         static ComPtr<IDXGIFactory4> dxgi_factory;
@@ -360,7 +363,7 @@ private:
     }
 #endif
 
-    memory_footprint get_memory_footprint() {
+    static memory_footprint get_memory_footprint() {
         memory_footprint footprint;
 #if defined(_WIN32)
         PROCESS_MEMORY_COUNTERS pmc;
@@ -369,17 +372,19 @@ private:
         footprint.peak_rss = (int64_t)(pmc.PeakWorkingSetSize/1024);
 #elif !defined(__APPLE__)
         std::ifstream status("/proc/self/status");
-        if (!status.is_open())
+        if (!status.is_open()) {
             return footprint;
+        }
 
         std::string line, title;
         while (std::getline(status, line)) {
             std::istringstream iss(line);
             iss >> title;
-            if (title == "VmHWM:")
+            if (title == "VmHWM:") {
                 iss >> footprint.peak_rss;
-            else if (title == "VmRSS:")
+            } else if (title == "VmRSS:") {
                 iss >> footprint.rss;
+            }
         }
 #endif
         return footprint;

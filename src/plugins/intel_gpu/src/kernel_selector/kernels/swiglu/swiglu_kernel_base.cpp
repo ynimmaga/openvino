@@ -3,6 +3,7 @@
 //
 
 #include "swiglu_kernel_base.h"
+
 #include "kernel_selector_utils.h"
 
 namespace kernel_selector {
@@ -44,7 +45,7 @@ JitConstants SwiGLUKernelBase::GetJitConstants(const swiglu_params& params, cons
     }
     jit.AddConstants({MakeJitConstant("SWISH_BETA", static_cast<float>(params.swish_beta))});
     jit.AddConstants({MakeJitConstant("UP_ADD_VAL", static_cast<float>(params.up_add_val))});
-    if (params.scale_factor > 0.0f) {
+    if (params.scale_factor > 0.0F) {
         jit.AddConstants({MakeJitConstant("SCALE_FACTOR", static_cast<float>(params.scale_factor))});
     }
 
@@ -54,8 +55,9 @@ JitConstants SwiGLUKernelBase::GetJitConstants(const swiglu_params& params, cons
 KernelsData SwiGLUKernelBase::GetKernelsData(const Params& params) const {
     assert(params.GetType() == KernelType::SWIGLU);
 
-    if (!Validate(params))
+    if (!Validate(params)) {
         return {};
+    }
 
     const swiglu_params& orgParams = static_cast<const swiglu_params&>(params);
     auto dispatchData = SetDefault(orgParams);
@@ -86,21 +88,24 @@ KernelsData SwiGLUKernelBase::GetKernelsData(const Params& params) const {
     return {kd};
 }
 
-
 bool SwiGLUKernelBase::Validate(const Params& params) const {
-    if (!KernelBaseOpenCL::Validate(params))
+    if (!KernelBaseOpenCL::Validate(params)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     return true;
 }
 
-Datatype SwiGLUKernelBase::GetAccumulatorType(const swiglu_params& params) const {
-    Datatype types[] = { Datatype::F32, Datatype::F16, Datatype::INT64, Datatype::INT32, Datatype::UINT32};
+Datatype SwiGLUKernelBase::GetAccumulatorType(const swiglu_params& params) {
+    Datatype types[] = {Datatype::F32, Datatype::F16, Datatype::INT64, Datatype::INT32, Datatype::UINT32};
 
-    for (Datatype type : types)
-        for (const auto& in : params.inputs)
-            if (in.GetDType() == type)
+    for (Datatype type : types) {
+        for (const auto& in : params.inputs) {
+            if (in.GetDType() == type) {
                 return type;
+            }
+        }
+    }
 
     return Datatype::F32;
 }

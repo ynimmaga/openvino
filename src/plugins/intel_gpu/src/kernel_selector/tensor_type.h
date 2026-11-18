@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -198,8 +198,9 @@ struct Pad {
 
     static size_t NumPadOffsetsPerDim() { return 2; /*pad_before/pad_after*/}
     size_t Total(bool is_runtime = false) const {
-        if (!is_runtime)
+        if (!is_runtime) {
             OPENVINO_ASSERT(!is_dynamic, "Total() is called for dynamic pad!");
+        }
         return before + after;
     }
 };
@@ -305,7 +306,7 @@ inline bool DoubleBlockedLayout(DataLayout l) {
 
 inline bool GroupedLayout(WeightsLayout l);
 
-inline bool GroupedLayout(DataLayout) {
+inline bool GroupedLayout(DataLayout /*unused*/) {
     return false;
 }
 
@@ -381,7 +382,7 @@ protected:
     size_t viewOffset = 0;  // in elements
     size_t firstElementOffset = 0;
     size_t totalSize = 0;  // in elements
-    float paddedVal = 0.f;
+    float paddedVal = 0.F;
 
 public:
     TensorBase() = default;
@@ -486,33 +487,35 @@ protected:
     Layout layout = Layout();
 
     template <typename ArrayT, typename ChannelName>
-    static inline int ChannelIndex(const ArrayT& channelArr, Layout l, ChannelName channelName) {
+    static int ChannelIndex(const ArrayT& channelArr, Layout l, ChannelName channelName) {
         size_t channel = static_cast<size_t>(channelName);
 
         for (auto& entry : channelArr) {
-            if (entry.first == l)
+            if (entry.first == l) {
                 return entry.second[channel];
+            }
         }
 
         return -1;
     }
 
     template <typename ArrayT, typename ChannelName>
-    static inline Dim Extract(const ArrayT& channelArr, Layout l, ChannelName channelName, const NDims& dims) {
+    static Dim Extract(const ArrayT& channelArr, Layout l, ChannelName channelName, const NDims& dims) {
         const int i = ChannelIndex(channelArr, l, channelName);
         return ((i < 0) || (i >= static_cast<int>(dims.size()))) ? Dim{1, 1, Pad{0, 0, false}} : dims[i];
     }
 
     template <typename ArrayT>
-    static inline uint32_t ChannelsCount(const ArrayT& channelArr, Layout l) {
+    static uint32_t ChannelsCount(const ArrayT& channelArr, Layout l) {
         const auto& entry =
             std::find_if(std::begin(channelArr),
                          std::end(channelArr),
                          [&](typename std::tuple_element<0, ArrayT>::type entry) { return entry.first == l; });
 
-        if (entry == channelArr.end())
+        if (entry == channelArr.end()) {
             throw std::invalid_argument("Failed to get channels count for layout " +
                                         std::to_string(static_cast<uint32_t>(l)));
+        }
 
         return std::accumulate(entry->second.begin(), entry->second.end(), 0U, [](uint32_t count, int v) {
             return count + ((v != -1) ? 1 : 0);
@@ -524,8 +527,7 @@ public:
     TensorBaseT(const TensorBaseT&) = default;
     TensorBaseT& operator=(const TensorBaseT&) = default;
 
-    TensorBaseT(const NDims& nd, DType dt, Layout l, size_t of = 0, size_t sz = 0, float pv = 0.f)
-        : TensorBase(nd, of, sz, pv), dtype(dt), layout(l) {}
+    TensorBaseT(const NDims& nd, DType dt, Layout l, size_t of = 0, size_t sz = 0, float pv = 0.F) : TensorBase(nd, of, sz, pv), dtype(dt), layout(l) {}
 
     DType GetDType() const { return dtype; }
     Layout GetLayout() const { return layout; }
@@ -584,8 +586,7 @@ struct DataTensor : public TensorBaseT<Datatype, DataLayout> {
     DataTensor(const DataTensor&) = default;
     DataTensor& operator=(const DataTensor&) = default;
 
-    DataTensor(const NDims& nd, Datatype dt, DataLayout l, size_t of = 0, size_t sz = 0, float pv = 0.f)
-        : TensorBaseT(nd, dt, l, of, sz, pv) {}
+    DataTensor(const NDims& nd, Datatype dt, DataLayout l, size_t of = 0, size_t sz = 0, float pv = 0.F) : TensorBaseT(nd, dt, l, of, sz, pv) {}
 
     DataTensor(const std::vector<size_t>& d, Datatype dt, DataLayout l)
         : TensorBaseT<Datatype, DataLayout>(GetSimpleDims(d, l), dt, l) {}
@@ -611,15 +612,17 @@ struct DataTensor : public TensorBaseT<Datatype, DataLayout> {
         return dynamic_shape_offset;
     }
 
-    static inline Dim Extract(DataLayout l, DataChannelName channel, const NDims& d) {
+    static Dim Extract(DataLayout l, DataChannelName channel, const NDims& d) {
         return TensorBaseT::Extract(dataChannelArray, l, channel, d);
     }
 
-    static inline int Channelndex(DataLayout l, DataChannelName channel) {
+    static int Channelndex(DataLayout l, DataChannelName channel) {
         return TensorBaseT::ChannelIndex(dataChannelArray, l, channel);
     }
 
-    static inline uint32_t ChannelsCount(DataLayout l) { return TensorBaseT::ChannelsCount(dataChannelArray, l); }
+    static uint32_t ChannelsCount(DataLayout l) {
+        return TensorBaseT::ChannelsCount(dataChannelArray, l);
+    }
 
     static size_t max_rank() { return static_cast<size_t>(DataChannelName::COUNT); }
 
@@ -639,8 +642,7 @@ struct WeightsTensor : TensorBaseT<WeightsType, WeightsLayout> {
     WeightsTensor(const WeightsTensor&) = default;
     WeightsTensor& operator=(const WeightsTensor&) = default;
 
-    WeightsTensor(const NDims& nd, WeightsType dt, WeightsLayout l, size_t of = 0, size_t sz = 0, float pv = 0.f)
-        : TensorBaseT(nd, dt, l, of, sz, pv) {}
+    WeightsTensor(const NDims& nd, WeightsType dt, WeightsLayout l, size_t of = 0, size_t sz = 0, float pv = 0.F) : TensorBaseT(nd, dt, l, of, sz, pv) {}
 
     WeightsTensor(const std::vector<size_t>& d, WeightsType dt, WeightsLayout l)
         : TensorBaseT<WeightsType, WeightsLayout>(GetSimpleDims(d, l), dt, l) {}
@@ -657,19 +659,21 @@ struct WeightsTensor : TensorBaseT<WeightsType, WeightsLayout> {
 
     void SwapXY();
 
-    static inline Dim Extract(WeightsLayout l, WeightsChannelName channel, const NDims& d) {
+    static Dim Extract(WeightsLayout l, WeightsChannelName channel, const NDims& d) {
         return TensorBaseT::Extract(weightsChannelArray, l, channel, d);
     }
 
-    static inline int Channelndex(WeightsLayout l, WeightsChannelName channel) {
+    static int Channelndex(WeightsLayout l, WeightsChannelName channel) {
         return TensorBaseT::ChannelIndex(weightsChannelArray, l, channel);
     }
 
-    static inline bool DoesGroupDimExist(WeightsLayout l) {
+    static bool DoesGroupDimExist(WeightsLayout l) {
         return TensorBaseT::ChannelIndex(weightsChannelArray, l, WeightsChannelName::G) != -1;
     }
 
-    static inline uint32_t ChannelsCount(WeightsLayout l) { return TensorBaseT::ChannelsCount(weightsChannelArray, l); }
+    static uint32_t ChannelsCount(WeightsLayout l) {
+        return TensorBaseT::ChannelsCount(weightsChannelArray, l);
+    }
 
 private:
     using WeightsChannelDesc =

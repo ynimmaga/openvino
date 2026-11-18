@@ -8,9 +8,9 @@
 #include <string>
 
 #include "blob_source.hpp"
-#include "intel_npu/common/filtered_config.hpp"
 #include "intel_npu/common/igraph.hpp"
 #include "intel_npu/common/npu.hpp"
+#include "intel_npu/config/config.hpp"
 #include "metadata.hpp"
 #include "openvino/runtime/tensor.hpp"
 
@@ -35,7 +35,7 @@ public:
      * @param logger A logger that should already use the name of the subclass.
      */
     IBlobFormatImporter(const std::shared_ptr<const ov::Model>& original_model,
-                        const FilteredConfig& config,
+                        const Config& config,
                         const Logger& logger);
 
     /**
@@ -45,8 +45,6 @@ public:
      *
      * @param backend The current backend in use, required for creating and using a parser.
      * @param network_name The resulted graph object will use this network name.
-     * @param device_name The name of the device. Used to update the compiler type if "perf count" was enabled via the
-     * configuration.
      * @param core The OV core. The weights separation feature may depend on this object to extract the original
      * weights.
      * @return A graph object. The type of graph depends on the content of the blob. E.g. a "weightless" graph will be
@@ -54,7 +52,6 @@ public:
      */
     std::shared_ptr<IGraph> create_graph(const ov::SoPtr<IEngineBackend>& backend,
                                          const std::string_view network_name,
-                                         const std::string_view device_name,
                                          const std::shared_ptr<ov::ICore>& core);
 
     /**
@@ -67,12 +64,12 @@ public:
      */
     std::shared_ptr<ov::Model> create_dummy_model() const;
 
-    FilteredConfig get_config() const;
+    Config get_config() const;
 
     virtual ~IBlobFormatImporter() = default;
 
 protected:
-    FilteredConfig m_config;
+    Config m_config;
     Logger m_logger;
 
 private:
@@ -134,8 +131,23 @@ namespace blob_format_importer_factory {
 std::unique_ptr<IBlobFormatImporter> create(BlobSource& npu_formatted_blob,
                                             const bool is_raw_blob,
                                             const std::shared_ptr<const ov::Model>& original_model,
-                                            const FilteredConfig& config);
+                                            const Config& config);
 
 }  // namespace blob_format_importer_factory
+
+namespace blob_format_importer_utils {
+
+/**
+ * @brief Checks that the I/O descriptors of the main schedule don't describe init schedule weights.
+ * @details The init schedule weights descriptors belong to the init schedules only. Their flags are derived from the
+ * argument names found in the blob, so an argument of the main schedule using such a name must be rejected. Otherwise,
+ * it would be dropped from the imported model and treated as an init schedule buffer by the inference request.
+ *
+ * @param metadata The I/O descriptors of the main schedule.
+ * @throws ov::Exception if at least one descriptor is marked as an init schedule weights descriptor.
+ */
+void validate_main_schedule_descriptors(const NetworkMetadata& metadata);
+
+}  // namespace blob_format_importer_utils
 
 }  // namespace intel_npu

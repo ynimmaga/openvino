@@ -6,6 +6,7 @@
 #include "openvino/core/node.hpp"
 
 #include "intel_gpu/plugin/program_builder.hpp"
+#include "intel_gpu/plugin/custom_layer_source.hpp"
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/simple_math.hpp"
 #include "intel_gpu/primitives/custom_gpu_primitive.hpp"
@@ -13,115 +14,14 @@
 
 namespace ov::intel_gpu {
 
-template<typename T>
-static inline std::string vecToString(std::vector<T> vec) {
-    if (vec.empty())
-        return "";
-
-    std::string res = std::to_string(vec[0]);
-    for (size_t i = 1; i < vec.size(); i++) {
-        res += "," + std::to_string(vec[i]);
-    }
-    return res;
-}
-
-template<>
-inline std::string vecToString<std::string>(std::vector<std::string> vec) {
-    if (vec.empty())
-        return "";
-
-    std::string res = vec[0];
-    for (size_t i = 1; i < vec.size(); i++) {
-        res += "," + vec[i];
-    }
-    return res;
-}
-
-class CustomLayerAttributeVisitor : public ov::AttributeVisitor {
-public:
-    CustomLayerAttributeVisitor() : m_values({}) { }
-
-    void on_adapter(const std::string& name, ov::ValueAccessor<void>& adapter) override {
-        OPENVINO_THROW("Attribute ", name, " can't be processed\n");
-    }
-    // The remaining adapter methods fall back on the void adapter if not implemented
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::string>& adapter) override {
-        m_values[name] = adapter.get();
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<bool>& adapter) override {
-        m_values[name] = std::to_string(static_cast<int>(adapter.get()));
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<int64_t>& adapter) override {
-        m_values[name] = std::to_string(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<double>& adapter) override {
-        m_values[name] = std::to_string(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<std::string>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<float>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<double>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<int8_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<int16_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<int32_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<int64_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<uint8_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<uint16_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<uint32_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-    void on_adapter(const std::string& name, ov::ValueAccessor<std::vector<uint64_t>>& adapter) override {
-        m_values[name] = vecToString(adapter.get());
-    }
-
-    std::map<std::string, std::string> get_parameters() const {
-        return m_values;
-    }
-
-protected:
-    std::map<std::string, std::string> m_values;
-};
-
 void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, CustomLayerPtr customLayer) {
     if (!p.use_new_shape_infer()) {
-        OPENVINO_ASSERT(op->get_output_size() == 1u, "Custom OP limitation: static model only support one output.");
+        OPENVINO_ASSERT(op->get_output_size() == 1U, "Custom OP limitation: static model only support one output.");
     }
     auto inputs = p.GetInputInfo(op);
     std::string layerName = layer_type_name_ID(op);
 
-    CustomLayerAttributeVisitor visitor;
-    op->visit_attributes(visitor);
-    auto params = visitor.get_parameters();
-
-    // Handle defines
-    std::string layerDefines;
-    for (const auto& def : customLayer->Defines()) {
-        std::string singleDefine("#define " + def.name + " " + def.prefix);
-        if (params.find(def.param) != params.end()) {
-            singleDefine += params.at(def.param);
-        } else {
-            singleDefine += def.default_value;
-        }
-        singleDefine += def.postfix + "\n";
-        layerDefines.append(singleDefine);
-    }
+    const auto kernel_sources = make_custom_layer_source(op, *customLayer);
 
     // reserve
     std::vector<cldnn::input_info> reordered_inputs;
@@ -140,9 +40,9 @@ void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, Cust
 
             // Handle input reorder
             if (param.portIndex < static_cast<int>(inputs.size()) && reordered_inputs[param.portIndex].pid.empty()) {
-                // todo: add support for multiple reorders of the same input? (read as bfyx for one arg and yxfb for another)
                 if (param.format != cldnn::format::any) {
-                    auto reorderPrimName = inputs[param.portIndex].pid + "_" + op->get_friendly_name() + ProgramBuilder::m_preCustomLayerTag;
+                    auto reorderPrimName = inputs[param.portIndex].pid + "_" + op->get_friendly_name() +
+                                            "_" + std::to_string(param.portIndex) + ProgramBuilder::m_preCustomLayerTag;
                     auto preprocessPrim = cldnn::reorder(
                         reorderPrimName,
                         inputs[param.portIndex],
@@ -176,9 +76,6 @@ void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, Cust
             OPENVINO_THROW("Invalid custom layer param type: ", param.type, " in operation: ", op->get_friendly_name());
         }
     }
-    const std::string layerTitle("\n// Layer " + op->get_friendly_name() + " using Custom Layer " + customLayer->Name() + "\n");
-    const std::string defineTitle("// Custom Layer User Defines\n");
-
     int iidx = customLayer->InputDimSourceIndex();
     OPENVINO_ASSERT(outputFormats.size() == op->get_output_size(), "The number of outputFormats should be same as op->get_output_size().");
 
@@ -186,15 +83,16 @@ void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, Cust
     for (size_t i = 0; i < op->get_output_size(); i++) {
         auto dims = op->get_output_partial_shape(i);
 
-        constexpr size_t kDynamic = std::numeric_limits<size_t>::max();
-        size_t N = (dims.size() > 0) ? dims[0].is_dynamic() ? kDynamic : dims[0].get_length() : 1;
-        size_t C = (dims.size() > 1) ? dims[1].is_dynamic() ? kDynamic : dims[1].get_length() : 1;
-        size_t H = (dims.size() > 2) ? dims[2].is_dynamic() ? kDynamic : dims[2].get_length() : 1;
-        size_t W = (dims.size() > 3) ? dims[3].is_dynamic() ? kDynamic : dims[3].get_length() : 1;
-
-        if (dims.is_dynamic()) {
+        // format::any needs the shape-based ctor for the same reason a dynamic shape does:
+        // the tensor ctor stores an `any` layout's sizes in raw internal order at full
+        // internal rank, transposing the WorkSizes resolution and the downstream shape.
+        if (dims.is_dynamic() || outputFormats[i] == cldnn::format::any) {
             outputLayouts[i] = cldnn::layout(dims, cldnn::element_type_to_data_type(op->get_output_element_type(i)), outputFormats[i]);
         } else {
+            size_t N = (dims.size() > 0) ? dims[0].get_length() : 1;
+            size_t C = (dims.size() > 1) ? dims[1].get_length() : 1;
+            size_t H = (dims.size() > 2) ? dims[2].get_length() : 1;
+            size_t W = (dims.size() > 3) ? dims[3].get_length() : 1;
             cldnn::tensor outputTensor = cldnn::tensor(cldnn::batch(N), cldnn::feature(C), cldnn::spatial(W, H));
             outputLayouts[i] = cldnn::layout(cldnn::element_type_to_data_type(op->get_output_element_type(i)), outputFormats[i], outputTensor);
         }
@@ -204,8 +102,9 @@ void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, Cust
 
     // if input index is greater than -1, take dimension from input
     if (iidx >= 0) {
-        if (static_cast<size_t>(iidx) >= op->get_input_size())
+        if (static_cast<size_t>(iidx) >= op->get_input_size()) {
             OPENVINO_THROW("Invalid input tensor for index: ", iidx);
+        }
         auto inputDims = op->get_input_shape(iidx);
         // Regardless of whether the model has one or more outputs, only the first output is used to update gws and lws.
         cldnn::custom_gpu_primitive::update_work_group_size(op->get_output_partial_shape(0),
@@ -238,7 +137,7 @@ void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, Cust
 
     auto customPrim = cldnn::custom_gpu_primitive(genericLayerName,
                                                   reordered_inputs,
-                                                  {layerTitle, defineTitle, layerDefines, customLayer->KernelSource()},
+                                                  kernel_sources,
                                                   customLayer->KernelEntry(),
                                                   kernelParameters,
                                                   customLayer->CompilerOptions(),

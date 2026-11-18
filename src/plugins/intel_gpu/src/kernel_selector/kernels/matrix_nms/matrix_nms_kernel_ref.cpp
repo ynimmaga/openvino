@@ -53,16 +53,19 @@ std::tuple<int, int> GetMaxBoxes(const matrix_nms_params& params) {
     const int boxes_num = static_cast<int>(params.inputs[0].Feature().v);
 
     int max_boxes_per_class{boxes_num};
-    if (params.nms_top_k >= 0)
+    if (params.nms_top_k >= 0) {
         max_boxes_per_class = std::min(max_boxes_per_class, params.nms_top_k);
+    }
 
     auto classes_num_adj = classes_num;
-    if (params.background_class >= 0 && params.background_class < classes_num)
+    if (params.background_class >= 0 && params.background_class < classes_num) {
         classes_num_adj = std::max(1, classes_num - 1);
+    }
 
     auto max_boxes_per_batch = max_boxes_per_class * classes_num_adj;
-    if (params.keep_top_k >= 0)
+    if (params.keep_top_k >= 0) {
         max_boxes_per_batch = std::min(max_boxes_per_batch, params.keep_top_k);
+    }
 
     return {max_boxes_per_class, max_boxes_per_batch};
 }
@@ -75,7 +78,7 @@ KernelsData MatrixNmsKernelRef::GetKernelsData(const Params& params) const {
 
     constexpr size_t kernels_num{3};
     KernelData kernel_data = KernelData::Default<matrix_nms_params>(params, kernels_num);
-    const matrix_nms_params& new_params = dynamic_cast<const matrix_nms_params&>(*kernel_data.params.get());
+    const matrix_nms_params& new_params = dynamic_cast<const matrix_nms_params&>(*kernel_data.params);
 
     constexpr size_t BOX_INFO_SIZE{16};
 
@@ -170,7 +173,7 @@ JitConstants MatrixNmsKernelRef::GetJitConstants(const matrix_nms_params& params
     return jit;
 }
 
-void MatrixNmsKernelRef::SetKernelArguments(const matrix_nms_params& params, clKernelData& kernel, size_t idx) const {
+void MatrixNmsKernelRef::SetKernelArguments(const matrix_nms_params& params, clKernelData& kernel, size_t idx) {
     switch (idx) {
     case 0:
         kernel.params.arguments.push_back({ArgumentDescriptor::Types::INPUT, 0});

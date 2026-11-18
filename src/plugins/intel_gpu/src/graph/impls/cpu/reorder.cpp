@@ -46,8 +46,9 @@ struct reorder_impl : public typed_primitive_impl<reorder> {
 
         const auto* params = instance.get_impl_params();
 
-        if (instance.get_impl_params()->input_layouts[0].format != instance.get_impl_params()->input_layouts[0].format)
+        if (instance.get_impl_params()->input_layouts[0].format != instance.get_impl_params()->input_layouts[0].format) {
             OPENVINO_THROW("[GPU] Unsupported reorder case: input and output type are different");
+        }
 
         ov::TensorVector input_host_tensors;
         ov::TensorVector output_host_tensors;
@@ -72,10 +73,10 @@ struct reorder_impl : public typed_primitive_impl<reorder> {
             return stream.group_events(events);
         }
 
-        return make_output_event(stream, instance.is_output());
+        return make_output_event(stream, instance.needs_completion_event());
     }
 
-    void init_kernels(const kernels_cache& , const kernel_impl_params&) override {}
+    void init_kernels(const kernels_cache& /*kernels_cache*/, const kernel_impl_params& /*params*/) override {}
 
     void update(primitive_inst& inst, const kernel_impl_params& impl_param) override {}
 

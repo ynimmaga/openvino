@@ -19,8 +19,9 @@ static void reorder_unreduced_axis_no_fusion(const kernel_impl_params& impl_para
         if (output_layout.get_partial_shape().size() < input_layout.get_partial_shape().size()) {
             output_layout.format = format::adjust_to_rank(output_layout.format, input_layout.get_partial_shape().size());
             auto new_p_shape = input_layout.get_partial_shape();
-            for (auto axis : axes)
+            for (auto axis : axes) {
                 new_p_shape[axis] = 1;
+            }
             output_layout.set_partial_shape(new_p_shape);
         }
     } else {
@@ -30,10 +31,11 @@ static void reorder_unreduced_axis_no_fusion(const kernel_impl_params& impl_para
         size_t num_others = num_dims - num_spatial;
 
         for (size_t idx = 0; idx < axes.size(); idx++) {
-            if (axes[idx] < static_cast<int64_t>(num_others))
+            if (axes[idx] < static_cast<int64_t>(num_others)) {
                 in_dims[axes[idx]] = 1;
-            else
+            } else {
                 in_dims[(num_dims - axes[idx] - 1 + num_others)] = 1;
+            }
         }
 
         auto output_tensor = output_layout.get_tensor();
@@ -70,8 +72,8 @@ protected:
         auto input_md = onednn::layout_to_memory_desc_blocked(input_layout, dnnl::memory::format_tag::undef);
         auto output_md = onednn::layout_to_memory_desc_blocked(output_layout, dnnl::memory::format_tag::undef);
 
-        float p = 0.f;
-        float eps = 0.f;
+        float p = 0.F;
+        float eps = 0.F;
         dnnl::algorithm alg;
         switch (prim->mode) {
             case reduce_mode::mean: alg = dnnl::algorithm::reduction_mean; break;
@@ -81,15 +83,15 @@ protected:
             case reduce_mode::prod: alg = dnnl::algorithm::reduction_mul; break;
             case reduce_mode::sum_square:
                 alg = dnnl::algorithm::reduction_norm_lp_power_p_sum;
-                p = 2.0f;
+                p = 2.0F;
                 break;
             case reduce_mode::l1:
                 alg = dnnl::algorithm::reduction_norm_lp_sum;
-                p = 1.0f;
+                p = 1.0F;
                 break;
             case reduce_mode::l2:
                 alg = dnnl::algorithm::reduction_norm_lp_sum;
-                p = 2.0f;
+                p = 2.0F;
                 break;
             default: throw std::runtime_error("unsupported reduce mode");
         }
@@ -117,9 +119,7 @@ public:
         ob << typed_pd->get_p();
         ob << typed_pd->get_epsilon();
 
-        std::vector<uint8_t> prim_cache;
-        prim_cache = _prim.get_cache_blob();
-        ob << prim_cache;
+        ob << get_cache_blob();
 #endif
     }
 
@@ -138,14 +138,7 @@ public:
         float p, eps;
         ib >> p >> eps;
 
-        auto prim_desc = std::make_shared<dnnl::reduction::primitive_desc>(
-            ib.get_engine().get_onednn_engine(),
-            alg,
-            input_md,
-            output_md,
-            p,
-            eps,
-            *_attrs.get());
+        auto prim_desc = std::make_shared<dnnl::reduction::primitive_desc>(ib.get_engine().get_onednn_engine(), alg, input_md, output_md, p, eps, *_attrs);
         _pd = *prim_desc;
 
         std::vector<uint8_t> prim_cache;
@@ -153,7 +146,7 @@ public:
 
         _scratchpad_md = _pd.scratchpad_desc();
 
-        _prim = dnnl::primitive(_pd, prim_cache);
+        _prim = make_primitive_from_blob(prim_cache);
 #endif
     }
 

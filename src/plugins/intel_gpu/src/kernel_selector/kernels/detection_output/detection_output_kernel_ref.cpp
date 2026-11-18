@@ -10,7 +10,7 @@
 namespace kernel_selector {
 
 namespace {
-static inline int GetPartitionStep(int localWorkItemNum) {
+inline int GetPartitionStep(int localWorkItemNum) {
     int step_size = 0;
     for (int temp = localWorkItemNum; temp > 1; temp /= 2) {
         step_size++;
@@ -18,7 +18,7 @@ static inline int GetPartitionStep(int localWorkItemNum) {
     return step_size;
 }
 
-static inline size_t GetOptimalLocalClassSize(std::vector<size_t> gws, const EngineInfo& info) {
+inline size_t GetOptimalLocalClassSize(std::vector<size_t> gws, const EngineInfo& info) {
     const size_t optimal_values[] = {16, 8, 7, 6, 5, 4, 2, 1};
     const size_t splitNum = gws[2];
     const size_t globalClassNum = gws[1];
@@ -151,7 +151,7 @@ bool DetectionOutputKernelRef::Validate(const Params& p) const {
     return true;
 }
 
-void DetectionOutputKernelRef::SetKernelArguments(const detection_output_params& params, clKernelData& kernel, size_t idx) const {
+void DetectionOutputKernelRef::SetKernelArguments(const detection_output_params& params, clKernelData& kernel, size_t idx) {
     if (params.detectOutParams.decrease_label_id) {
         if (idx == 0) {
             kernel.params.arguments.push_back({ArgumentDescriptor::Types::INPUT, 1});
@@ -200,8 +200,9 @@ void DetectionOutputKernelRef::SetKernelArguments(const detection_output_params&
 KernelsData DetectionOutputKernelRef::GetKernelsData(const Params& params) const {
     assert(params.GetType() == KernelType::DETECTION_OUTPUT);
 
-    if (!Validate(params))
+    if (!Validate(params)) {
         return {};
+    }
 
     constexpr size_t kKernelsNum = 4;
     KernelData kd = KernelData::Default<detection_output_params>(params, kKernelsNum);
@@ -268,8 +269,9 @@ KernelsData DetectionOutputKernelRef::GetKernelsData(const Params& params) const
                 //                                           stack [LWS1 * LWS2 * 100 (stack_size) * 4 (int size) bytes]
                 auto req_local_mem_size = dispatchData.lws[1] * dispatchData.lws[2] * 2 * 4 +
                                           dispatchData.lws[1] * dispatchData.lws[2] * stack_size * 4;
-                if (req_local_mem_size < detectOutParams.engineInfo.maxLocalMemSize)
+                if (req_local_mem_size < detectOutParams.engineInfo.maxLocalMemSize) {
                     cldnnJit.AddConstant(MakeJitConstant("USE_LOCAL_MEMORY_FOR_STACK", true));
+                }
                 cldnnJit.AddConstants({MakeJitConstant("DO_STAGE_" + std::to_string(i) + "_CAFFE", "true"),
                                        MakeJitConstant("LOCAL_CLASS_NUM", dispatchData.lws[1]),
                                        MakeJitConstant("LOCAL_WORK_NUM", dispatchData.lws[2]),
@@ -306,8 +308,9 @@ KernelsData DetectionOutputKernelRef::GetKernelsData(const Params& params) const
                         return static_cast<float>(bytes_used) / static_cast<float>(max_reg_bytes);
                     };
 
-                    if (estimateRegPressure() > 0.8)
+                    if (estimateRegPressure() > 0.8) {
                         cldnnJit.AddConstant(MakeJitConstant("USE_LOCAL_MEMORY", "true"));
+                    }
 
                     cldnnJit.AddConstant(MakeJitConstant("DO_STAGE_" + std::to_string(i) + "_CAFFE_OPT", "true"));
                 } else {
@@ -322,8 +325,9 @@ KernelsData DetectionOutputKernelRef::GetKernelsData(const Params& params) const
             } else {
                 // Limit local memory usage for stack buffer [LWS0 * 100 (stack_size) * 4 (int size) bytes]
                 auto req_local_mem_size = dispatchData.lws[0] * stack_size * 4;
-                if (req_local_mem_size < detectOutParams.engineInfo.maxLocalMemSize)
+                if (req_local_mem_size < detectOutParams.engineInfo.maxLocalMemSize) {
                     cldnnJit.AddConstant(MakeJitConstant("USE_LOCAL_MEMORY_FOR_STACK", true));
+                }
                 cldnnJit.AddConstants({MakeJitConstant("DO_STAGE_" + std::to_string(i) + "_CAFFE", "true"),
                                        MakeJitConstant("LOCAL_BATCHES_NUM", dispatchData.lws[0])});
             }

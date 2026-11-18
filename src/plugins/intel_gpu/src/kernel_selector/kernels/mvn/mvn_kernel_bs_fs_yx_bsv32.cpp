@@ -22,11 +22,13 @@ ParamsKey MVNKernel_bs_fs_yx_bsv32::GetSupportedKey() const {
     k.EnableInputDataType(Datatype::UINT8);
     k.EnableInputDataType(Datatype::F16);
     k.EnableInputDataType(Datatype::F32);
+    k.EnableInputDataType(Datatype::BF16);
 
     k.EnableOutputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::UINT8);
     k.EnableOutputDataType(Datatype::F16);
     k.EnableOutputDataType(Datatype::F32);
+    k.EnableOutputDataType(Datatype::BF16);
 
     k.EnableInputLayout(DataLayout::bs_fs_yx_bsv32_fsv16);
     k.EnableOutputLayout(DataLayout::bs_fs_yx_bsv32_fsv16);
@@ -53,24 +55,27 @@ DeviceFeaturesKey MVNKernel_bs_fs_yx_bsv32::get_required_device_features_key(con
 }
 
 bool MVNKernel_bs_fs_yx_bsv32::Validate(const Params& p) const {
-    if (!Parent::Validate(p))
+    if (!Parent::Validate(p)) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     auto params = static_cast<const mvn_params&>(p);
 
     // TODO Add support for input padding via iterating over y (parallel or in kernel).
-    if (params.inputs[0].X().pad.Total() != 0 || params.inputs[0].Y().pad.Total() != 0)
+    if (params.inputs[0].X().pad.Total() != 0 || params.inputs[0].Y().pad.Total() != 0) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
 
-Datatype MVNKernel_bs_fs_yx_bsv32::GetAccumulatorType(const mvn_params& params) const {
+Datatype MVNKernel_bs_fs_yx_bsv32::GetAccumulatorType(const mvn_params& params) {
     const auto& input_dt = params.inputs[0].GetDType();
 
     switch (input_dt) {
         case Datatype::F32:
         case Datatype::F16:
+        case Datatype::BF16:
             return Datatype::F32;
         case Datatype::INT8:
         case Datatype::UINT8:
@@ -107,7 +112,7 @@ JitConstants MVNKernel_bs_fs_yx_bsv32::GetJitConstants(const mvn_params& params,
     return jits;
 }
 
-std::vector<size_t> MVNKernel_bs_fs_yx_bsv32::GetFinalKernelLws(const std::vector<size_t>& gws, uint64_t max_wg) const {
+std::vector<size_t> MVNKernel_bs_fs_yx_bsv32::GetFinalKernelLws(const std::vector<size_t>& gws, uint64_t max_wg) {
     std::vector<size_t> lws(3);
     lws[0] = 1;
     lws[1] = gws[1];
@@ -126,8 +131,7 @@ std::vector<size_t> MVNKernel_bs_fs_yx_bsv32::GetFinalKernelLws(const std::vecto
     return lws;
 }
 
-MVNKernel_bs_fs_yx_bsv32::MultiDispatchData MVNKernel_bs_fs_yx_bsv32::SetDefaultForMulti(const mvn_params& params,
-                                                                                                    bool has_enough_data) const {
+MVNKernel_bs_fs_yx_bsv32::MultiDispatchData MVNKernel_bs_fs_yx_bsv32::SetDefaultForMulti(const mvn_params& params, bool has_enough_data) {
     MultiDispatchData dispatchData;
 
     auto items_num = params.outputs[0].X().v * params.outputs[0].Y().v;
@@ -191,8 +195,9 @@ MVNKernel_bs_fs_yx_bsv32::MultiDispatchData MVNKernel_bs_fs_yx_bsv32::SetDefault
 
 KernelsData MVNKernel_bs_fs_yx_bsv32::GetMultiStageKernelsData(const mvn_params& params,
                                                                         bool has_enough_data) const {
-    if (!Validate(params))
+    if (!Validate(params)) {
         return {};
+    }
 
     constexpr size_t intermediate_bytes = 4;
     auto dispatchData = SetDefaultForMulti(params, has_enough_data);

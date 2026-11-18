@@ -56,7 +56,9 @@ DeviceFeaturesKey FullyConnectedKernelIMAD::get_required_device_features_key(con
     return k;
 }
 
-FullyConnectedKernelIMAD::Parent::DispatchData FullyConnectedKernelIMAD::SetDefault(const fully_connected_params& params, int, int /*kernel_number*/) const {
+FullyConnectedKernelIMAD::Parent::DispatchData FullyConnectedKernelIMAD::SetDefault(const fully_connected_params& params,
+                                                                                    int /*autoTuneIndex*/,
+                                                                                    int /*kernel_number*/) const {
     auto dispatchData = Parent::SetDefault(params);
 
     if (!params.has_dynamic_tensors()) {
@@ -94,8 +96,9 @@ bool FullyConnectedKernelIMAD::Validate(const Params& params) const {
     // Dynamic kernel doesn't support dynamic weights
     if (fc_params.is_shape_agnostic && in.is_dynamic()) {
         if ((out_l == DataLayout::bfyx && in.Y().v == 0) ||
-            (out_l == DataLayout::bf && in.Feature().v == 0))
+            (out_l == DataLayout::bf && in.Feature().v == 0)) {
             DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
     }
 
     if ((in.X().pad.before != 0) || (in.X().pad.after != 0) ||
@@ -106,8 +109,9 @@ bool FullyConnectedKernelIMAD::Validate(const Params& params) const {
 
     if (out_l == DataLayout::bfyx) {
         // We don't support 4d output
-        if (in.X().v > 1)
+        if (in.X().v > 1) {
             DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
     } else {
         if (in.X().v * in.Y().v * wei.X().v * wei.Y().v != 1) {
             // Currently only Input = F x 1 x 1 with Filter = 1 x 1 is supported
@@ -118,7 +122,7 @@ bool FullyConnectedKernelIMAD::Validate(const Params& params) const {
     return true;
 }
 
-float FullyConnectedKernelIMAD::EstimateOccupancy(const fully_connected_params& params, size_t tile_ofm, size_t tile_batch, size_t slm_div_factor) const {
+float FullyConnectedKernelIMAD::EstimateOccupancy(const fully_connected_params& params, size_t tile_ofm, size_t tile_batch, size_t slm_div_factor) {
     FullyConnectedTuningData tuning_data;
 
     auto of_num = params.outputs[0].Feature().v;
@@ -137,7 +141,7 @@ float FullyConnectedKernelIMAD::EstimateOccupancy(const fully_connected_params& 
     return static_cast<float>(threads) / static_cast<float>(params.engineInfo.maxThreadsPerDevice);
 }
 
-FullyConnectedKernelIMAD::FullyConnectedTuningData FullyConnectedKernelIMAD::GetTuningParams(const fully_connected_params& params) const {
+FullyConnectedKernelIMAD::FullyConnectedTuningData FullyConnectedKernelIMAD::GetTuningParams(const fully_connected_params& params) {
     FullyConnectedTuningData tuning_data;
 
     auto of_num = params.outputs[0].Feature().v;
@@ -176,8 +180,9 @@ FullyConnectedKernelIMAD::FullyConnectedTuningData FullyConnectedKernelIMAD::Get
 
     tuning_data.tile_batch = tuning_data.sub_group_size == 8 ? 16 : 8;
     if (!params.has_dynamic_tensors()) {
-        while (tile_batch_max_size % tuning_data.tile_batch != 0)
+        while (tile_batch_max_size % tuning_data.tile_batch != 0) {
             tuning_data.tile_batch--;
+        }
     }
 
     size_t sub_group_pack_size = tuning_data.sub_group_size * tuning_data.pack_size;

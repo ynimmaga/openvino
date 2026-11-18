@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -64,8 +64,9 @@ static size_t get_min_register_usage(const convolution_params& cp, size_t block_
 
 // Shrink only when the 1x1 block fits the register budget.
 static bool needs_smaller_block(const convolution_params& cp, size_t block_width, size_t block_height) {
-    if (get_min_register_usage(cp, block_width, block_height) < reg_threshold)
+    if (get_min_register_usage(cp, block_width, block_height) < reg_threshold) {
         return false;
+    }
 
     return get_min_register_usage(cp, 1, 1) < reg_threshold;
 }
@@ -184,10 +185,11 @@ ConvolutionKernel_bfyx_os_iyx_osv32::AutoTuneOption ConvolutionKernel_bfyx_os_iy
     // Shrink to the register budget and prefer wider blocks for contiguous memory access.
     while ((option.blockWidth > 1 || option.blockHeight > 1) &&
            needs_smaller_block(cp, option.blockWidth, option.blockHeight)) {
-        if (option.blockHeight >= option.blockWidth)
+        if (option.blockHeight >= option.blockWidth) {
             option.blockHeight--;
-        else
+        } else {
             option.blockWidth--;
+        }
     }
 
     return option;

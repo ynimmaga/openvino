@@ -215,10 +215,11 @@ JitConstants DFTKernelRef::GetJitConstants(const dft_params& params) const {
         // when axis is negative value, convert to positive.
         if (axis < 0) {
             // RDFT has converted by r + a, others r -1 + a by op specification
-            if (params.mode == dft_params::Mode::real && params.direction == dft_params::Direction::forward)
+            if (params.mode == dft_params::Mode::real && params.direction == dft_params::Direction::forward) {
                 axis = out_rank -1 + axis; // (out_rank-1) is in_rank
-            else
+            } else {
                 axis = in_rank -1 + axis;
+            }
         }
 
         auto inverted_axis = dims_size - axis;
@@ -249,7 +250,7 @@ JitConstants DFTKernelRef::GetJitConstants(const dft_params& params) const {
         MakeJitConstForParam(jit, "SIGNAL_SIZE", out_rank, axis, signal_sizes[inverted_axis]);
     }
     if (params.direction == dft_params::Direction::inverse) {
-        jit.AddConstant(MakeJitConstant("INVERSE_DFT_MULTIPLIER", 1.f / s));
+        jit.AddConstant(MakeJitConstant("INVERSE_DFT_MULTIPLIER", 1.F / s));
     }
     if (params.mode == dft_params::Mode::real) {
         jit.AddConstant(MakeJitConstant("REAL_DFT", true));

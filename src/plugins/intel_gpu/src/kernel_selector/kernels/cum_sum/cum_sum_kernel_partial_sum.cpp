@@ -54,8 +54,9 @@ JitConstants CumSumKernelPartialSum::GetJitConstants(const cum_sum_params& param
 }
 
 KernelsData CumSumKernelPartialSum::GetMultiStageKernelsData(const Params& params) const {
-    if (!Validate(params))
+    if (!Validate(params)) {
         return {};
+    }
 
     constexpr size_t kernels_num = 2;
     KernelData kd = KernelData::Default<cum_sum_params>(params, kernels_num);
@@ -94,7 +95,7 @@ KernelsData CumSumKernelPartialSum::GetMultiStageKernelsData(const Params& param
     return {kd};
 }
 
-CumSumKernelPartialSum::MultiDispatchData CumSumKernelPartialSum::SetDefaultForMulti(const cum_sum_params& params) const {
+CumSumKernelPartialSum::MultiDispatchData CumSumKernelPartialSum::SetDefaultForMulti(const cum_sum_params& params) {
     MultiDispatchData dispatchData;
     std::vector<size_t> dims = {params.outputs[0].Batch().v,
                                 params.outputs[0].Feature().v,
@@ -109,14 +110,16 @@ CumSumKernelPartialSum::MultiDispatchData CumSumKernelPartialSum::SetDefaultForM
     std::vector<size_t> gws(3, 0);
     gws[0] = dims[index];
     for (size_t i = 0, gws_i = 1; i < dims.size(); ++i) {
-        if (i == index)
+        if (i == index) {
             continue;
+        }
         if (gws[gws_i] == 0) {
             gws[gws_i] = dims[i];
         } else {
             gws[gws_i] *= dims[i];
-            if (gws_i == 1)
+            if (gws_i == 1) {
                 ++gws_i;
+            }
         }
     }
 

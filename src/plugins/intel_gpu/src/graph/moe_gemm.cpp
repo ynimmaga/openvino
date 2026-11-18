@@ -22,8 +22,9 @@ std::vector<layout> moe_gemm_inst::calc_output_layouts(moe_gemm_node const& /*no
     size_t num_experts_per_token = desc->num_experts_per_token;
     auto input_layout = impl_param.get_input_layout(0);
     size_t input_rank = input_layout.get_partial_shape().size();
-    if (input_rank != 3)
+    if (input_rank != 3) {
         OPENVINO_THROW("moe_gemm's input rank should be 3");
+    }
     auto experts_layout = impl_param.get_input_layout(1);
     auto out_n_dim = input_rank - 1;
     auto output_shape = input_layout.get_partial_shape();
@@ -34,17 +35,22 @@ std::vector<layout> moe_gemm_inst::calc_output_layouts(moe_gemm_node const& /*no
     output_shape[out_n_dim] = ov::Dimension(n);
 
     if (!input_layout.is_dynamic()) {
-        size_t seq_len_dim = (desc->has_batch_dim) ? 1 : 0;
-        auto m = input_layout.get_shape()[seq_len_dim];
+        const auto& in_shape = input_layout.get_shape();
+        const auto m = in_shape[0] * in_shape[1];
+        // Follow the arrangement moe_gather produced; has_batch_dim only decides the ambiguous [1,1,K] case
+        bool batch_layout = desc->has_batch_dim;
+        if ((in_shape[0] == 1) != (in_shape[1] == 1)) {
+            batch_layout = in_shape[0] == 1;
+        }
         if (m == 1) {
             // first gemm (up/gate) in the generate phase
-            if (!desc->has_batch_dim) {
+            if (!batch_layout) {
                 output_shape = ov::PartialShape{ov::Dimension(num_experts_per_token), ov::Dimension(1), ov::Dimension(n)};
             } else {
                 output_shape = ov::PartialShape{ov::Dimension(1), ov::Dimension(num_experts_per_token), ov::Dimension(n)};
             }
         } else {
-            if (!desc->has_batch_dim) {
+            if (!batch_layout) {
                 output_shape = ov::PartialShape{ov::Dimension(m), ov::Dimension(1), ov::Dimension(n)};
             } else {
                 output_shape = ov::PartialShape{ov::Dimension(1), ov::Dimension(m), ov::Dimension(n)};
@@ -64,8 +70,9 @@ std::string moe_gemm_inst::to_string(moe_gemm_node const& node) {
     std::stringstream primitive_description;
 
     json_composite moe_gemm_info;
-    if (desc->output_data_types[0].has_value())
+    if (desc->output_data_types[0].has_value()) {
         moe_gemm_info.add("out dt: ", dt_to_str(*desc->output_data_types[0]));
+    }
     node_info->dump(primitive_description);
 
     return primitive_description.str();

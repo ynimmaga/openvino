@@ -50,24 +50,27 @@ PoolingKernelBase::DispatchData PoolingKerneGPU_fs_b_yx_fsv32::SetDefault(const 
 }
 
 bool PoolingKerneGPU_fs_b_yx_fsv32::Validate(const Params& p) const {
-    if (!PoolingKernelBase::Validate(p))
+    if (!PoolingKernelBase::Validate(p)) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     auto pp = static_cast<const pooling_params&>(p);
 
     // Feature padding before must be aligned to 32 to keep slices aligned
-    if (pp.outputs[0].Feature().pad.before % 32 != 0)
+    if (pp.outputs[0].Feature().pad.before % 32 != 0) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
-    if (pp.inputs[0].Feature().pad.before % 32 != 0)
+    if (pp.inputs[0].Feature().pad.before % 32 != 0) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
 
 JitConstants PoolingKerneGPU_fs_b_yx_fsv32::GetJitConstants(const pooling_params& params, DispatchData dispatchData) const {
     auto jit = PoolingKernelBase::GetJitConstants(params, dispatchData);
-    auto pp = static_cast<const pooling_params&>(params);
+    auto pp = params;
 
     // Heurestic needed for very big pool size.
     // ToDo Can it be changed to lower pool sizes?

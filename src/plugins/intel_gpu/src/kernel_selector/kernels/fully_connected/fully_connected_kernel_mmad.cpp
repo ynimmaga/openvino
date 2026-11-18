@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -48,8 +48,9 @@ DeviceFeaturesKey FullyConnectedKernelMMAD::get_required_device_features_key(con
 }
 
 bool FullyConnectedKernelMMAD::Validate(const Params& params) const {
-    if (!Parent::Validate(params))
+    if (!Parent::Validate(params)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     auto fc_params = static_cast<const fully_connected_params&>(params);
     auto input = fc_params.inputs[0];
@@ -61,7 +62,7 @@ bool FullyConnectedKernelMMAD::Validate(const Params& params) const {
     return true;
 }
 
-FullyConnectedKernelMMAD::FullyConnectedTuningData FullyConnectedKernelMMAD::GetTuningParams(const fully_connected_params& params) const {
+FullyConnectedKernelMMAD::FullyConnectedTuningData FullyConnectedKernelMMAD::GetTuningParams(const fully_connected_params& params) {
     FullyConnectedTuningData tuning_data;
 
     const auto& input = params.inputs[0];
@@ -88,16 +89,19 @@ FullyConnectedKernelMMAD::FullyConnectedTuningData FullyConnectedKernelMMAD::Get
 
     // Some specific HW doesn't support SIMD8, force SIMD16 to respect this HW
     // Also chose SIMD16 for the exception cases
-    if (!IsSIMDSizeSupported(params.engineInfo, 8) || simd16_is_faster)
+    if (!IsSIMDSizeSupported(params.engineInfo, 8) || simd16_is_faster) {
         tuning_data.sub_group_size = 16;
+    }
 
     size_t sub_group_pack_size = tuning_data.sub_group_size * tuning_data.pack_size;
 
-    tuning_data.feature_blocks_count = input.GetLayout() == DataLayout::bfyx && input_feature % sub_group_pack_size != 0 ?
-                                       input_feature / sub_group_pack_size :
-                                       input.GetLayout() != DataLayout::bfyx && tuning_data.sub_group_size == 16 ?
-                                       CeilDiv(input_feature, 32) % 2 == 0 ? CeilDiv(input_feature, 64) : CeilDiv(input_feature, 64) - 1 :
-                                       CeilDiv(input_feature, sub_group_pack_size);
+    if (input.GetLayout() == DataLayout::bfyx && input_feature % sub_group_pack_size != 0) {
+        tuning_data.feature_blocks_count = input_feature / sub_group_pack_size;
+    } else if (input.GetLayout() != DataLayout::bfyx && tuning_data.sub_group_size == 16) {
+        tuning_data.feature_blocks_count = CeilDiv(input_feature, 32) % 2 == 0 ? CeilDiv(input_feature, 64) : CeilDiv(input_feature, 64) - 1;
+    } else {
+        tuning_data.feature_blocks_count = CeilDiv(input_feature, sub_group_pack_size);
+    }
 
     bool slm_div_factor_exception = input_batch == 300 && input_feature == 2048 &&
                                     output_batch == 300 && (output_feature == 324 || output_feature == 81);
@@ -106,13 +110,16 @@ FullyConnectedKernelMMAD::FullyConnectedTuningData FullyConnectedKernelMMAD::Get
                              input_feature == 9216 && output_feature == 4096;
 
     size_t max_work_group_size = params.engineInfo.maxWorkGroupSize;
-    if (max_work_group_size > 256 && !big_wgs_exception)
+    if (max_work_group_size > 256 && !big_wgs_exception) {
         max_work_group_size = 256;
+    }
 
-    if (tuning_data.feature_blocks_count && tuning_data.sub_group_size == 8 && !slm_div_factor_exception)
+    if (tuning_data.feature_blocks_count && tuning_data.sub_group_size == 8 && !slm_div_factor_exception) {
         while (tuning_data.feature_blocks_count % (tuning_data.slm_div_factor * 2) == 0 &&
-               (tuning_data.slm_div_factor * 2 <= max_work_group_size / tuning_data.sub_group_size))
+               (tuning_data.slm_div_factor * 2 <= max_work_group_size / tuning_data.sub_group_size)) {
             tuning_data.slm_div_factor *= 2;
+        }
+    }
 
     tuning_data.work_group_size = tuning_data.slm_div_factor * tuning_data.sub_group_size;
 
@@ -124,8 +131,9 @@ FullyConnectedKernelMMAD::FullyConnectedTuningData FullyConnectedKernelMMAD::Get
         size_t temp_unroll_factor = 3;
 
         if (tuning_data.full_unroll_factor > 3) {
-            while (tuning_data.full_unroll_factor % temp_unroll_factor)
+            while (tuning_data.full_unroll_factor % temp_unroll_factor) {
                 temp_unroll_factor--;
+            }
             tuning_data.unroll_factor = temp_unroll_factor;
         } else {
             tuning_data.unroll_factor = tuning_data.full_unroll_factor;
@@ -136,14 +144,16 @@ FullyConnectedKernelMMAD::FullyConnectedTuningData FullyConnectedKernelMMAD::Get
 }
 
 FullyConnectedKernelMMAD::DispatchData FullyConnectedKernelMMAD::SetDefault(const fully_connected_params& params,
-                                                                            int, int /*kernel_number*/) const {
+                                                                            int /*autoTuneIndex*/,
+                                                                            int /*kernel_number*/) const {
     FullyConnectedTuningData tuning_data = GetTuningParams(params);
     auto dispatchData = Parent::SetDefault(params);
     const auto& output = params.outputs[0];
 
     std::vector<size_t> global = { Align(output.Feature().v, tuning_data.sub_group_size) * tuning_data.slm_div_factor, output.Batch().v, 1 };
-    if (output.GetLayout() == DataLayout::bfyx)
+    if (output.GetLayout() == DataLayout::bfyx) {
         global = { Align(output.Y().v, tuning_data.sub_group_size) * tuning_data.slm_div_factor, output.Batch().v, output.Feature().v };
+    }
 
     dispatchData.gws = global;
     dispatchData.lws = { tuning_data.work_group_size, 1, 1 };
@@ -204,11 +214,12 @@ JitConstants FullyConnectedKernelMMAD::GetJitConstants(const fully_connected_par
         jit.AddConstant(MakeJitConstant("MMAD_INPUT_FBLOCK_PITCH", input.Feature().pitch * sub_group_pack_size));
     }
 
-    bool has_feature_leftovers = (input.GetLayout() == DataLayout::bfyx && ((input.Feature().v % sub_group_pack_size) != 0u)) ||
-                                 (input.GetLayout() != DataLayout::bfyx && tuning_data.sub_group_size == 16 && ((CeilDiv(input.Feature().v, 32) % 2) != 0u));
+    bool has_feature_leftovers = (input.GetLayout() == DataLayout::bfyx && ((input.Feature().v % sub_group_pack_size) != 0U)) ||
+                                 (input.GetLayout() != DataLayout::bfyx && tuning_data.sub_group_size == 16 && ((CeilDiv(input.Feature().v, 32) % 2) != 0U));
 
-    if (output.GetLayout() == DataLayout::bfyx)
-        has_feature_leftovers = ((input.Y().v % sub_group_pack_size) != 0u);
+    if (output.GetLayout() == DataLayout::bfyx) {
+        has_feature_leftovers = ((input.Y().v % sub_group_pack_size) != 0U);
+    }
 
     jit.AddConstant(MakeJitConstant("HAS_FEATURE_LEFTOVERS", has_feature_leftovers));
     jit.AddConstant(MakeJitConstant("FEATURE_BLOCKS_COUNT", tuning_data.feature_blocks_count));
@@ -256,8 +267,9 @@ JitConstants FullyConnectedKernelMMAD::GetJitConstants(const fully_connected_par
     if (!params.fused_ops.empty()) {
         auto input_dt = GetActivationType(params);
         std::vector<std::string> idx_order = { "batch", "feature", "0", "0" };
-        if (output.GetLayout() == DataLayout::bfyx)
+        if (output.GetLayout() == DataLayout::bfyx) {
             idx_order = { "batch", "skip_f", "feature", "0" };
+        }
 
         FusedOpsConfiguration conf = { "", idx_order, "dequantized", input_dt, 1 };
         jit.Merge(MakeFusedOpsJitConstants(params, { conf }));
@@ -270,9 +282,12 @@ KernelsData FullyConnectedKernelMMAD::GetKernelsData(const Params& params) const
     auto fc_params = static_cast<const fully_connected_params&>(params);
     auto& input = fc_params.inputs[0];
 
-    auto w_layout = GetTuningParams(fc_params).sub_group_size == 16 ?
-                    input.GetDims().size() == 4 ? WeightsLayout::os_is_yx_isa8_osv16_isv4 : WeightsLayout::os_is_zyx_isa8_osv16_isv4 :
-                    input.GetDims().size() == 4 ? WeightsLayout::os_is_yx_isa8_osv8_isv4 : WeightsLayout::os_is_zyx_isa8_osv8_isv4;
+    WeightsLayout w_layout;
+    if (GetTuningParams(fc_params).sub_group_size == 16) {
+        w_layout = input.GetDims().size() == 4 ? WeightsLayout::os_is_yx_isa8_osv16_isv4 : WeightsLayout::os_is_zyx_isa8_osv16_isv4;
+    } else {
+        w_layout = input.GetDims().size() == 4 ? WeightsLayout::os_is_yx_isa8_osv8_isv4 : WeightsLayout::os_is_zyx_isa8_osv8_isv4;
+    }
 
     KernelsData res = {};
     for (size_t i = 0; i < autoTuneOptions.size(); i++) {

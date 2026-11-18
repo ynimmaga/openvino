@@ -29,15 +29,17 @@ const std::shared_ptr<primitive>& topology::at(primitive_id id) const {
     }
 }
 
-void topology::change_input_layout(const primitive_id& id, const layout& new_layout) {
-    if (new_layout.format < format::any || new_layout.format >= format::format_num)
+void topology::change_input_layout(const primitive_id& id, const layout& new_layout) const {
+    if (new_layout.format < format::any || new_layout.format >= format::format_num) {
         throw std::invalid_argument("Unknown format of layout.");
+    }
 
     if (new_layout.data_type != data_types::f16 && new_layout.data_type != data_types::f32 &&
         new_layout.data_type != data_types::i8 && new_layout.data_type != data_types::u1 &&
         new_layout.data_type != data_types::u8 && new_layout.data_type != data_types::i32 &&
-        new_layout.data_type != data_types::i64)
+        new_layout.data_type != data_types::i64) {
         throw std::invalid_argument("Unknown data_type of layout.");
+    }
 
     const auto& inp_layout = this->at(id);
     if (inp_layout->type != input_layout::type_id()) {
@@ -47,7 +49,7 @@ void topology::change_input_layout(const primitive_id& id, const layout& new_lay
     inp_lay_prim->change_layout(new_layout);
 }
 
-const std::vector<primitive_id> topology::get_primitives_ids() const {
+std::vector<primitive_id> topology::get_primitives_ids() const {
     std::vector<primitive_id> prim_ids;
     for (const auto& prim : _primitives) prim_ids.push_back(prim.first);
     return prim_ids;

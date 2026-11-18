@@ -409,7 +409,8 @@ std::string vec2str(const std::vector<vecElementType>& vec) {
     return "()";
 }
 
-inline float cosineSimilarity(cldnn::mem_lock<ov::float16, cldnn::mem_lock_type::read>& vec1, cldnn::mem_lock<ov::float16, cldnn::mem_lock_type::read>& memLockVec2) {
+template <typename T>
+inline float cosineSimilarity(cldnn::mem_lock<T, cldnn::mem_lock_type::read>& vec1, cldnn::mem_lock<T, cldnn::mem_lock_type::read>& memLockVec2) {
     if (vec1.size() != memLockVec2.size()) {
         return -1.0f;
     }
@@ -667,5 +668,10 @@ inline cldnn::network::ptr get_network(cldnn::engine& engine,
 double get_profiling_exectime(const std::map<cldnn::primitive_id, cldnn::network_output>& outputs,
                     const std::string& primitive_id);
 void print_profiling_all_exectimes(const std::map<cldnn::primitive_id, cldnn::network_output>& outputs);
+
+/// Returns the ov::Core device string ("GPU", "GPU.1", ...) of the device behind `get_test_engine()`, i.e. the one
+/// selected by `--device_suffix`. ov::Core resolves the plain "GPU" to the first enumerated device and ignores the
+/// flag, so full-pipeline tests that gate on `get_test_engine()` capabilities must compile against this name instead.
+std::string get_engine_gpu_device_name();
 
 } // namespace tests

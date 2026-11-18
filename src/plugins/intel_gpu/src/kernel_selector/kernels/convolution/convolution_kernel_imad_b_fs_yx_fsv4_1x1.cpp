@@ -100,13 +100,14 @@ bool ConvolutionKernel_imad_b_fs_yx_fsv4_1x1::Validate(const Params& params) con
     KernelData kd = KernelData::Default<convolution_params>(params);
     convolution_params& newParams = *static_cast<convolution_params*>(kd.params.get());
 
-    if (newParams.filterSize.x != 1 || newParams.filterSize.y != 1)
+    if (newParams.filterSize.x != 1 || newParams.filterSize.y != 1) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     return true;
 }
 
-bool ConvolutionKernel_imad_b_fs_yx_fsv4_1x1::ValidateAutoTuneParams(const convolution_params& params, const AutoTuneParams& tune_params) const {
+bool ConvolutionKernel_imad_b_fs_yx_fsv4_1x1::ValidateAutoTuneParams(const convolution_params& params, const AutoTuneParams& tune_params) {
     auto sel_lwg_d = tune_params.lwg_depth;
     return CeilDiv(params.weights.IFM().v, fsv) % sel_lwg_d == 0;
 }
@@ -213,8 +214,9 @@ KernelsData ConvolutionKernel_imad_b_fs_yx_fsv4_1x1::GetKernelsDataForAutoTune(c
 
     for (size_t i = 0; i < all_tune_params.size(); i++) {
         auto tune_params = GetAutoTuneParams(conv_params, static_cast<int>(i));
-        if (!ValidateAutoTuneParams(conv_params, tune_params))
+        if (!ValidateAutoTuneParams(conv_params, tune_params)) {
             continue;
+        }
         KernelsData kd = GetTunedKernelsDataByIndex(params, static_cast<int>(i));
         if (!kd.empty()) {
             res.emplace_back(kd[0]);

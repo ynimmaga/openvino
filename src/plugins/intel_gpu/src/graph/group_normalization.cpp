@@ -10,13 +10,12 @@ namespace cldnn {
 GPU_DEFINE_PRIMITIVE_TYPE_ID(group_normalization)
 
 layout group_normalization_inst::calc_output_layout(group_normalization_node const& node, kernel_impl_params const& impl_param) {
-    assert(static_cast<bool>(impl_param.desc->output_data_types[0]) == false &&
-        "Output data type forcing is not supported for group_normalization_node!");
     auto input_node_layout = impl_param.get_non_padded_input_layout();
     auto output_type = impl_param.desc->output_data_types[0].value_or(input_node_layout.data_type);
 
-    if (impl_param.has_fused_primitives())
+    if (impl_param.has_fused_primitives()) {
         output_type = impl_param.get_output_element_type();
+    }
 
     return layout(output_type, input_node_layout.format, input_node_layout.get_tensor());
 }

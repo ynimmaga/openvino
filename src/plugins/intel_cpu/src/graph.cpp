@@ -2092,6 +2092,19 @@ void Graph::EnforceInferencePrecision() const {
 
     // Pattern-based node skipping for BF16 precision enforcement
     if (inferPrec == ov::element::bf16) {
+        // Preserve a continuous f32 region around model-declared precision-sensitive operations.
+        for (const auto& node : graphNodes) {
+            if (!node->isBF16ConversionDisabled()) {
+                continue;
+            }
+            const auto inserted = nodesToSkip.insert(node);
+            if (!inserted.second) {
+                continue;
+            }
+            backwardSkipSearch(node, nodesToSkip);
+            forwardSkipSearch(node, nodesToSkip);
+        }
+
         for (const auto& node : graphNodes) {
             // Pattern 1: MatMul with Convert from integer to floating point on any input. This basically means that
             // converting such an integer input to bf16 leads to loosing accuracy, as bf16 can only exactly represent
@@ -2144,6 +2157,20 @@ void Graph::EnforceInferencePrecision() const {
 
                 // kvcache of PagedAttention should be written directly
                 if (node->getType() == Type::PagedAttention && any_of(inPort, 3U, 4U)) {
+                    return true;
+                }
+                // The caches of SparsePA are written directly. The op needs the scale in the query type, but a constant
+                // input is never converted: enforce it explicitly.
+                if (node->getType() == Type::SparsePA) {
+                    if (any_of(inPort, 3U, 4U)) {
+                        return true;
+                    }
+                    if (inPort == 11U) {
+                        return false;
+                    }
+                }
+                // PagedQSAIndexer writes its caches directly and the op needs one element type on all float inputs.
+                if (node->getType() == Type::PagedQSAIndexer) {
                     return true;
                 }
                 // kv cache of PaKVReorder should be written directly

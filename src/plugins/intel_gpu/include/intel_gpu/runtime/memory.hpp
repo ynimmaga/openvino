@@ -154,8 +154,12 @@ struct simple_attached_memory : memory {
 
     void* lock(const stream& /* stream */, mem_lock_type /* type */) override { return _pointer; }
     void unlock(const stream& /* stream */) override {}
-    event::ptr fill(stream& /* stream */, unsigned char, const std::vector<event::ptr>&, bool) override { return nullptr; }
-    event::ptr fill(stream& /* stream */, const std::vector<event::ptr>&, bool) override { return nullptr; }
+    event::ptr fill(stream& /* stream */, unsigned char /*pattern*/, const std::vector<event::ptr>& /*dep_events*/, bool /*blocking*/) override {
+        return nullptr;
+    }
+    event::ptr fill(stream& /* stream */, const std::vector<event::ptr>& /*dep_events*/, bool /*blocking*/) override {
+        return nullptr;
+    }
     shared_mem_params get_internal_params(runtime_types rt_type) const override { return { shared_mem_type::shared_mem_empty, nullptr, nullptr, nullptr,
 #ifdef _WIN32
         nullptr,
@@ -279,8 +283,9 @@ inline std::vector<T> read_vector(cldnn::memory::ptr mem, const cldnn::stream& s
     } else {
         auto append_from_lock = [](auto& lock, std::vector<T>& out) {
             out.reserve(lock.end() - lock.begin());
-            for (auto it = lock.begin(); it != lock.end(); ++it)
+            for (auto it = lock.begin(); it != lock.end(); ++it) {
                 out.push_back(static_cast<T>(*it));
+            }
         };
         switch (mem_dtype) {
             case data_types::i32: {

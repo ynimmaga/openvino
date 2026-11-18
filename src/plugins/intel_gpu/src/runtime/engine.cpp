@@ -70,7 +70,7 @@ const device_info& engine::get_device_info() const {
     return _device->get_info();
 }
 
-const device::ptr engine::get_device() const {
+device::ptr engine::get_device() const {
     return _device;
 }
 
@@ -90,15 +90,17 @@ uint64_t engine::get_max_memory_size() const {
     return max_device_mem;
 }
 
-uint64_t engine::get_host_memory_size() const {
+uint64_t engine::get_host_memory_size() {
     return static_cast<uint64_t>(get_cpu_ram_size());
 }
 
 bool engine::supports_allocation(allocation_type type) const {
-    if (memory_capabilities::is_usm_type(type) && !use_unified_shared_memory())
+    if (memory_capabilities::is_usm_type(type) && !use_unified_shared_memory()) {
         return false;
-    if (allocation_type::usm_shared == type)
+    }
+    if (allocation_type::usm_shared == type) {
         return false;
+    }
     return _device->get_mem_caps().support_allocation_type(type);
 }
 
@@ -108,8 +110,9 @@ bool engine::can_use_host_usm_zero_copy() const {
 }
 
 allocation_type engine::get_lockable_preferred_memory_allocation_type(bool is_image_layout) const {
-    if (!use_unified_shared_memory() || is_image_layout)
+    if (!use_unified_shared_memory() || is_image_layout) {
         return get_default_allocation_type();
+    }
 
     /*
         We do not check device allocation here.
@@ -120,24 +123,29 @@ allocation_type engine::get_lockable_preferred_memory_allocation_type(bool is_im
     bool support_usm_host = supports_allocation(allocation_type::usm_host);
     bool support_usm_shared = supports_allocation(allocation_type::usm_shared);
 
-    if (support_usm_shared)
+    if (support_usm_shared) {
         return allocation_type::usm_shared;
-    if (support_usm_host)
+    }
+    if (support_usm_host) {
         return allocation_type::usm_host;
+    }
 
     OPENVINO_ASSERT(false, "[GPU] Couldn't find proper allocation type in get_lockable_preferred_memory_allocation_type method");
 }
 
 allocation_type engine::get_preferred_memory_allocation_type(bool is_image_layout) const {
-    if (!use_unified_shared_memory() || is_image_layout)
+    if (!use_unified_shared_memory() || is_image_layout) {
         return get_default_allocation_type();
+    }
 
-    if (supports_allocation(allocation_type::usm_device))
+    if (supports_allocation(allocation_type::usm_device)) {
         return allocation_type::usm_device;
+    }
 
     // Fallback to host allocations in case if device ones are not supported for some reason
-    if (supports_allocation(allocation_type::usm_host))
+    if (supports_allocation(allocation_type::usm_host)) {
         return allocation_type::usm_host;
+    }
 
     OPENVINO_ASSERT(false, "[GPU] Couldn't find proper allocation type in get_preferred_memory_allocation_type method");
 }
@@ -304,7 +312,7 @@ std::shared_ptr<cldnn::engine> engine::create(engine_types engine_type, runtime_
     return engine::create(engine_type, runtime_type, device);
 }
 
-bool engine::check_allocatable(const layout& layout, allocation_type type) {
+bool engine::check_allocatable(const layout& layout, allocation_type type) const {
     OPENVINO_ASSERT(supports_allocation(type), "[GPU] Unsupported allocation type: ", type);
 
     if (!get_enable_large_allocations()) {

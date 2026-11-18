@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,7 @@
 #include <vector>
 
 namespace kernel_selector {
-JitConstants CTCGreedyDecoderKernelBase::GetJitConstants(const ctc_greedy_decoder_params& params, CTCGreedyDecoderKernelBase::DispatchData) const {
+JitConstants CTCGreedyDecoderKernelBase::GetJitConstants(const ctc_greedy_decoder_params& params, CTCGreedyDecoderKernelBase::DispatchData /*unused*/) const {
     JitConstants jit = MakeBaseParamsJitConstants(params);
     auto inp = params.inputs[0];
 
@@ -44,8 +44,9 @@ CTCGreedyDecoderKernelBase::DispatchData CTCGreedyDecoderKernelBase::SetDefault(
 KernelsData CTCGreedyDecoderKernelBase::GetCommonKernelsData(const Params& params) const {
     assert(params.GetType() == KernelType::CTC_GREEDY_DECODER);
 
-    if (!Validate(params))
+    if (!Validate(params)) {
         return {};
+    }
 
     const ctc_greedy_decoder_params& orgParams = static_cast<const ctc_greedy_decoder_params&>(params);
 

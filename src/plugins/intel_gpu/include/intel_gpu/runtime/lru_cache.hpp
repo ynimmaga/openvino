@@ -23,8 +23,6 @@ class LruCache {
 public:
     using data_type = std::pair<Key, Value>;
 
-
-public:
     explicit LruCache(size_t caps) : _capacity(caps) {}
 
     ~LruCache() {
@@ -93,6 +91,24 @@ public:
         }
         touch_data(iter->second);
         return _lru_data_list.front().second;
+    }
+
+    /**
+     * @brief Remove the entry associated with a key
+     *
+     * @param key
+     * @return true if any value associated with the key was existed and removed
+     * @return false otherwise
+     */
+    bool erase(const Key& key) {
+        auto iter = _key_map.find(key);
+        if (iter == _key_map.end()) {
+            return false;
+        }
+
+        _lru_data_list.erase(iter->second);
+        _key_map.erase(iter);
+        return true;
     }
 
     /**
@@ -204,6 +220,11 @@ public:
     Value get(const Key& key) {
         std::lock_guard<std::mutex> lock(_mutex);
         return parent::get(key);
+    }
+
+    bool erase(const Key& key) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        return parent::erase(key);
     }
 
     void set_remove_item_callback(FuncRemoveItem callback) {

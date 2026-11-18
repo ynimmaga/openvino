@@ -111,9 +111,7 @@ public:
         ob << typed_pd->get_padding_l();
         ob << typed_pd->get_padding_r();
 
-        std::vector<uint8_t> prim_cache;
-        prim_cache = _prim.get_cache_blob();
-        ob << prim_cache;
+        ob << get_cache_blob();
 #endif
     }
 
@@ -140,18 +138,17 @@ public:
         ib >> pad_l;
         ib >> pad_r;
 
-        auto prim_desc = std::make_shared<dnnl::pooling_forward::primitive_desc>(
-            ib.get_engine().get_onednn_engine(),
-            dnnl::prop_kind::forward_inference,
-            alg,
-            input_md,
-            output_md,
-            stride,
-            kernel,
-            dilation,
-            pad_l,
-            pad_r,
-            *_attrs.get());
+        auto prim_desc = std::make_shared<dnnl::pooling_forward::primitive_desc>(ib.get_engine().get_onednn_engine(),
+                                                                                 dnnl::prop_kind::forward_inference,
+                                                                                 alg,
+                                                                                 input_md,
+                                                                                 output_md,
+                                                                                 stride,
+                                                                                 kernel,
+                                                                                 dilation,
+                                                                                 pad_l,
+                                                                                 pad_r,
+                                                                                 *_attrs);
         _pd = *prim_desc;
 
         std::vector<uint8_t> prim_cache;
@@ -159,7 +156,7 @@ public:
 
         _scratchpad_md = _pd.scratchpad_desc();
 
-        _prim = dnnl::primitive(_pd, prim_cache);
+        _prim = make_primitive_from_blob(prim_cache);
 #endif
     }
 

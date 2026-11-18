@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -30,10 +30,9 @@ DeviceFeaturesKey FullyConnected_bf_io_input_spatial::get_required_device_featur
     return k;
 }
 
-FullyConnected_bf_io_input_spatial::DispatchData FullyConnected_bf_io_input_spatial::SetDefault(
-    const fully_connected_params& arg,
-    int,
-    int /*kernel_number*/) const {
+FullyConnected_bf_io_input_spatial::DispatchData FullyConnected_bf_io_input_spatial::SetDefault(const fully_connected_params& arg,
+                                                                                                int /*autoTuneIndex*/,
+                                                                                                int /*kernel_number*/) const {
     auto dispatchData = FullyConnectedKernelBase::SetDefault(arg);
 
     dispatchData.gws[0] = Align(arg.outputs[0].LogicalSize() / arg.inputs[0].Batch().v, 16);
@@ -52,9 +51,11 @@ KernelsPriority FullyConnected_bf_io_input_spatial::GetKernelsPriority(const Par
     const auto& input = p.inputs[0];
     const auto& output = p.outputs[0];
 
-    if (input.Batch().v == 1 && output.Batch().v == 1)
-        if ((input.LogicalSize() / output.Batch().v >= 4096) && (output.Feature().v >= 4096))
+    if (input.Batch().v == 1 && output.Batch().v == 1) {
+        if ((input.LogicalSize() / output.Batch().v >= 4096) && (output.Feature().v >= 4096)) {
             return FORCE_PRIORITY_1;
+        }
+    }
 
     return DONT_USE_IF_HAVE_SOMETHING_ELSE;
 }

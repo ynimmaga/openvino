@@ -40,14 +40,19 @@ shape_types ImplementationManager::get_shape_type(const program_node& node) {
 
 bool ImplementationManager::is_supported(const program_node& node, const std::set<key_type>& supported_keys, shape_types supported_shape_type) {
     auto key_in = implementation_key()(!node.get_dependencies().empty() ? node.get_input_layout(0) : layout{ov::PartialShape{}, data_types::f32, format::any});
-    if (!supported_keys.empty() && supported_keys.find(key_in) == supported_keys.end())
+    if (!supported_keys.empty() && supported_keys.find(key_in) == supported_keys.end()) {
         return false;
+    }
 
     // calc_output_layouts() if layout is not valid looks redundant, but some tests fail w/o it due to
     // layout invalidation on get_input_layout() call
-    auto key_out = implementation_key()(node.get_outputs_count() > 0
-                                        ? node.is_valid_output_layout(0) ? node.get_output_layout(0) : node.calc_output_layouts()[0]
-                                        : layout{ov::PartialShape{}, data_types::f32, format::any});
+    const auto get_output_layout = [&node]() -> layout {
+        if (node.get_outputs_count() == 0) {
+            return layout{ov::PartialShape{}, data_types::f32, format::any};
+        }
+        return node.is_valid_output_layout(0) ? node.get_output_layout(0) : node.calc_output_layouts()[0];
+    };
+    auto key_out = implementation_key()(get_output_layout());
     return supported_keys.empty() || supported_keys.find(key_out) != supported_keys.end();
 }
 
