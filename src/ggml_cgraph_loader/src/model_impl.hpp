@@ -126,7 +126,13 @@ struct GgmlModel::Impl {
                 continue;
             }
             tmp.resize(ggml_nbytes(t));
-            if (fseek(f, static_cast<long>(doff + gguf_get_tensor_offset(gg, i)), SEEK_SET) != 0 ||
+            // long is 32-bit on Windows; use 64-bit seek so offsets past 2 GiB work.
+#ifdef _WIN32
+            const int seek_rc = _fseeki64(f, static_cast<long long>(doff + gguf_get_tensor_offset(gg, i)), SEEK_SET);
+#else
+            const int seek_rc = fseeko(f, static_cast<off_t>(doff + gguf_get_tensor_offset(gg, i)), SEEK_SET);
+#endif
+            if (seek_rc != 0 ||
                 fread(tmp.data(), 1, tmp.size(), f) != tmp.size()) {
                 fclose(f);
                 OPENVINO_THROW("[GGML] short read for tensor ", ggml_get_name(t));
