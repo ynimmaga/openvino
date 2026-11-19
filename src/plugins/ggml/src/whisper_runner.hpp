@@ -33,7 +33,9 @@ private:
 /// are projected from encoder_hidden_states (cross graph) at the start of every sequence.
 class WhisperDecoderRunner : public Runner {
 public:
-    WhisperDecoderRunner(std::shared_ptr<GgmlModel> model, const RunnerConfig& config);
+    /// `cross` is the already-built cross-attention graph (whisper.cross.json), sharing `model`'s
+    /// weight upload but keeping its own cross K/V caches.
+    WhisperDecoderRunner(std::shared_ptr<GgmlModel> model, std::shared_ptr<GgmlModel> cross);
 
     std::vector<PortDesc> inputs() const override;
     std::vector<PortDesc> outputs() const override;

@@ -4,12 +4,19 @@
 
 #pragma once
 
+#include <map>
+#include <mutex>
+
 #include "openvino/runtime/icompiled_model.hpp"
 #include "openvino/runtime/iplugin.hpp"
 #include "openvino/runtime/isync_infer_request.hpp"
 #include "runner.hpp"
 
 namespace ov {
+namespace ggml_cgraph_loader {
+class GgmlModel;
+}  // namespace ggml_cgraph_loader
+
 namespace ggml_plugin {
 
 /// "GGML" device: executes cgraph artifacts (ggml-cgraph-generator) on a ggml backend.
@@ -18,6 +25,11 @@ namespace ggml_plugin {
 ///
 /// Models are compiled from an artifact path only; there is no ov::Model to compile, because the
 /// artifact is a ggml graph rather than an OpenVINO one.
+///
+/// Compiling several artifacts over one GGUF (GGML_WEIGHTS) uploads the weights once: the first
+/// compiled model becomes the base for the rest, which share its backend and weight buffer and
+/// keep their own KV caches. The key includes the backend, so a different GGML_BACKEND gets its
+/// own upload.
 class Plugin : public ov::IPlugin {
 public:
     Plugin();
@@ -50,7 +62,17 @@ public:
                                     const ov::AnyMap& properties) const override;
 
 private:
+    /// Already-uploaded model for a (GGML_WEIGHTS, GGML_BACKEND) pair, if one is alive.
+    std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> weights_base(const ov::AnyMap& config) const;
+    /// Record `model` as the uploaded base for its (GGML_WEIGHTS, GGML_BACKEND) pair.
+    void remember_weights(const ov::AnyMap& config,
+                          const std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>& model) const;
+
     ov::AnyMap m_config;
+    /// Weak: when the last compiled model built over a base is destroyed, the upload (its backend
+    /// and weight buffer) is freed and the entry expires on the next compile.
+    mutable std::mutex m_weights_mutex;
+    mutable std::map<std::string, std::weak_ptr<ov::ggml_cgraph_loader::GgmlModel>> m_weights;
 };
 
 class CompiledModel : public ov::ICompiledModel {
