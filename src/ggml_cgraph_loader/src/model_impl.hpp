@@ -9,6 +9,8 @@
 // has to describe the topology. The public GgmlModel surface is implemented in model.cpp.
 #pragma once
 
+#include <cstdint>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <string>
@@ -26,6 +28,15 @@ namespace ov {
 namespace ggml_cgraph_loader {
 
 constexpr int MAX_NODES = 8192;
+
+/// fseek to a 64-bit offset (long is 32-bit on Windows, so fseek fails past 2 GB).
+inline int seek64(FILE* f, uint64_t offset) {
+#ifdef _WIN32
+    return _fseeki64(f, static_cast<__int64>(offset), SEEK_SET);
+#else
+    return fseeko(f, static_cast<off_t>(offset), SEEK_SET);
+#endif
+}
 
 /// Graph outputs, owned by the caller: the producer (the Loader) is destroyed after building, so
 /// anything needed afterwards must live here.
@@ -53,6 +64,8 @@ struct GgmlModel::Impl {
     ggml_cgraph* gf = nullptr;
     std::map<std::string, ggml_tensor*> wmap;  // gguf tensor name -> uploaded weight
     size_t n_kv = 0;  // baked into the graph shapes; 0 when unknown
+    // Sliding-window attention: input alias (self_kq_mask*) -> window; absent means full-causal.
+    std::map<std::string, int> swa_window;
     /// Inputs whose value the artifact carries; written once after allocation.
     std::vector<std::pair<ggml_tensor*, std::vector<uint8_t>>> constants;
     Out out;
@@ -60,6 +73,8 @@ struct GgmlModel::Impl {
     /// shared caches belong to it, and this keeps it alive.
     std::shared_ptr<GgmlModel> base;
     std::set<ggml_tensor*> shared_caches;
+    /// from_cgraph(json, base, CacheMode::Fresh): weights come from base, every cache is own.
+    bool fresh_caches = false;
     bool alibi = false;  // some attention node has max_bias > 0
     /// Set when some op cannot run on `backend` (e.g. a kernel the GPU backend lacks for these
     /// shapes): the scheduler then runs just those ops on the CPU backend, as llama.cpp does.
@@ -116,6 +131,9 @@ struct GgmlModel::Impl {
         gg = gguf_init_from_file(gguf_path.c_str(), gp);
         OPENVINO_ASSERT(gg, "[GGML] cannot read gguf: ", gguf_path);
         wbuf = ggml_backend_alloc_ctx_tensors(wctx, backend);
+        // A failed allocation leaves the tensors of the chunks it already freed pointing at them.
+        OPENVINO_ASSERT(wbuf || !ggml_get_first_tensor(wctx), "[GGML] not enough memory on ",
+                        ggml_backend_name(backend), " for the weights of ", gguf_path);
         FILE* f = fopen(gguf_path.c_str(), "rb");
         OPENVINO_ASSERT(f, "[GGML] cannot open: ", gguf_path);
         const size_t doff = gguf_get_data_offset(gg);
@@ -126,13 +144,7 @@ struct GgmlModel::Impl {
                 continue;
             }
             tmp.resize(ggml_nbytes(t));
-            // long is 32-bit on Windows; use 64-bit seek so offsets past 2 GiB work.
-#ifdef _WIN32
-            const int seek_rc = _fseeki64(f, static_cast<long long>(doff + gguf_get_tensor_offset(gg, i)), SEEK_SET);
-#else
-            const int seek_rc = fseeko(f, static_cast<off_t>(doff + gguf_get_tensor_offset(gg, i)), SEEK_SET);
-#endif
-            if (seek_rc != 0 ||
+            if (seek64(f, doff + gguf_get_tensor_offset(gg, i)) != 0 ||
                 fread(tmp.data(), 1, tmp.size(), f) != tmp.size()) {
                 fclose(f);
                 OPENVINO_THROW("[GGML] short read for tensor ", ggml_get_name(t));
@@ -157,6 +169,10 @@ struct GgmlModel::Impl {
         // Every external may be shared with the base model, leaving nothing to allocate here.
         if (ggml_get_first_tensor(ctx_ext)) {
             ebuf = ggml_backend_alloc_ctx_tensors(ctx_ext, backend);
+            OPENVINO_ASSERT(ebuf, "[GGML] not enough memory on ", ggml_backend_name(backend),
+                            " for the KV caches and graph inputs");
+            // Backend memory is not cleared, and an input no runner writes must still hold valid indices.
+            ggml_backend_buffer_clear(ebuf, 0);
         }
         gf = ggml_new_graph_custom(ctx_g, MAX_NODES, false);
         if (out.order.empty()) {

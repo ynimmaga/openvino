@@ -70,11 +70,9 @@ std::string WhisperEncoderRunner::backend_name() const {
 
 // ------------------------------------------------------------------------------------------- decoder
 
-WhisperDecoderRunner::WhisperDecoderRunner(std::shared_ptr<GgmlModel> model, const RunnerConfig& config)
-    : m_model(std::move(model)) {
-    OPENVINO_ASSERT(!config.cross.empty(),
-                    "[GGML] the whisper decoder needs GGML_CROSS (whisper.cross.json from dump_whisper SPLIT_CROSS=1)");
-    m_cross = GgmlModel::from_cgraph(config.cross.string(), config.weights.string(), config.backend);
+WhisperDecoderRunner::WhisperDecoderRunner(std::shared_ptr<GgmlModel> model,
+                                           std::shared_ptr<GgmlModel> cross)
+    : m_model(std::move(model)), m_cross(std::move(cross)) {
     m_n_kv = m_model->input_size("KQ_mask");
     m_n_text_ctx = meta(*m_model, "whisper.n_text_ctx");
     m_n_audio_ctx = meta(*m_model, "whisper.n_audio_ctx");

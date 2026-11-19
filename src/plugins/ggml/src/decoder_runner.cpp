@@ -9,6 +9,7 @@
 #include "decoder_runner.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include "openvino/core/except.hpp"
@@ -189,7 +190,10 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
             model->write_input(name, slot.data(), slot.size() * sizeof(int64_t));
         } else if (is_mask_input(name)) {
             // Row r (sequence index first_index + r) sees every earlier token the attention mask
-            // keeps; a padding row sees only its own scratch slot.
+            // keeps; a padding row sees only its own scratch slot. A sliding-window mask keeps
+            // only the last `window` positions visible (llama.cpp STANDARD: p1-p0 >= n_swa is
+            // masked); window 0 means full causal, as before.
+            const int window = model->mask_window(name);
             std::vector<uint16_t> mask(model->input_size(name), FP16_NEG_INF);
             for (size_t r = 0; r < bucket; r++) {
                 uint16_t* row = mask.data() + r * graph.n_kv;
@@ -198,13 +202,24 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
                     continue;
                 }
                 const size_t q = rows.first_index + r;
-                for (size_t c = 0; c <= q; c++) {
+                const size_t first = window > 0 ? q - std::min(q, static_cast<size_t>(window - 1)) : 0;
+                for (size_t c = first; c <= q; c++) {
                     if (rows.mask[c] != 0) {
                         row[m_scratch_slots + c] = alibi ? to_half(-static_cast<float>(q - c)) : 0;
                     }
                 }
             }
             model->write_input(name, mask.data(), mask.size() * sizeof(uint16_t));
+            // GGML_DUMP_MASK=<dir>: write this mask input to <dir>/<name>.bin after each
+            // forward (the last forward wins), so a test can compare the replay's mask against
+            // llama.cpp's own values (the generator's REF_OUT .inputs).
+            if (const char* d = std::getenv("GGML_DUMP_MASK")) {
+                std::string p = std::string(d) + "/" + name + ".bin";
+                if (FILE* f = fopen(p.c_str(), "wb")) {
+                    fwrite(mask.data(), sizeof(uint16_t), mask.size(), f);
+                    fclose(f);
+                }
+            }
         }
     }
     OPENVINO_ASSERT(model->compute(), "[GGML] decoder compute failed at index ", rows.first_index);

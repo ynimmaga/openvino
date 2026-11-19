@@ -18,6 +18,10 @@
 #include "openvino/runtime/so_ptr.hpp"
 
 namespace ov {
+namespace ggml_cgraph_loader {
+class GgmlModel;
+}  // namespace ggml_cgraph_loader
+
 namespace ggml_plugin {
 
 struct PortDesc {
@@ -64,8 +68,18 @@ struct RunnerConfig {
     static RunnerConfig parse(const ov::AnyMap& properties);
 };
 
-/// Picks the runner from the graph inputs the artifact declares.
-std::shared_ptr<Runner> make_runner(const std::filesystem::path& artifact, const RunnerConfig& config);
+/// Runner plus the GgmlModel behind it. The caller registers `model` as the weight base for the
+/// artifact's (GGML_WEIGHTS, GGML_BACKEND) pair when it uploaded the weights itself.
+struct RunnerResult {
+    std::shared_ptr<Runner> runner;
+    std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel> model;
+};
+
+/// Picks the runner from the graph inputs the artifact declares. `base`, when non-null, is the
+/// already-uploaded model of the same GGUF: the new graph shares its backend and weights and
+/// keeps its own KV caches (CacheMode::Fresh).
+RunnerResult make_runner(const std::filesystem::path& artifact, const RunnerConfig& config,
+                         const std::shared_ptr<ov::ggml_cgraph_loader::GgmlModel>& base = nullptr);
 
 }  // namespace ggml_plugin
 }  // namespace ov

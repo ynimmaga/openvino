@@ -51,41 +51,57 @@ RunnerConfig RunnerConfig::parse(const ov::AnyMap& properties) {
     return config;
 }
 
-std::shared_ptr<Runner> make_runner(const std::filesystem::path& artifact, const RunnerConfig& config) {
+RunnerResult make_runner(const std::filesystem::path& artifact, const RunnerConfig& config,
+                         const std::shared_ptr<GgmlModel>& base) {
     OPENVINO_ASSERT(!config.weights.empty(), "[GGML] GGML_WEIGHTS (the .gguf with the model weights) is required");
-    auto model = GgmlModel::from_cgraph(artifact.string(), config.weights.string(), config.backend);
+    auto model = base ? GgmlModel::from_cgraph(artifact.string(), base, GgmlModel::CacheMode::Fresh)
+                      : GgmlModel::from_cgraph(artifact.string(), config.weights.string(), config.backend);
     const auto names = model->input_names();
     const auto has = [&](const char* name) {
         return std::find(names.begin(), names.end(), name) != names.end();
     };
     // stable-diffusion.cpp's Qwen-Image 2.1 transformer, with its inputs named by the capture hook
     if (has("dit_latent") && has("dit_context") && has("dit_pe")) {
-        return std::make_shared<DitRunner>(std::move(model), config);
+        auto runner = std::make_shared<DitRunner>(model, config);
+        return {std::move(runner), std::move(model)};
     }
     // A causal decoder writes a KV cache (inp_kv_idx); positions may be absent (ALiBi).
     // Recurrent (Mamba / RWKV) layers keep per-sequence state selected by rs_s_copy instead.
     const bool decoder = (has("inp_kv_idx") || has("rs_s_copy")) && !has("KQ_mask");
     if (decoder && config.paged) {
-        return std::make_shared<PagedDecoderRunner>(std::move(model), config);
+        auto runner = std::make_shared<PagedDecoderRunner>(model, config);
+        return {std::move(runner), std::move(model)};
     }
     if (decoder) {
-        return std::make_shared<DecoderRunner>(std::move(model), config);
+        auto runner = std::make_shared<DecoderRunner>(model, config);
+        return {std::move(runner), std::move(model)};
     }
     if (has("mel")) {
-        return std::make_shared<WhisperEncoderRunner>(std::move(model));
+        auto runner = std::make_shared<WhisperEncoderRunner>(model);
+        return {std::move(runner), std::move(model)};
     }
     if (has("KQ_mask") && has("position")) {
-        return std::make_shared<WhisperDecoderRunner>(std::move(model), config);
+        OPENVINO_ASSERT(!config.cross.empty(),
+                        "[GGML] the whisper decoder needs GGML_CROSS (whisper.cross.json from dump_whisper SPLIT_CROSS=1)");
+        // The cross graph weighs the same GGUF as the decoder: share its upload (the decoder
+        // uploaded on a miss, or the registry base already held it) and keep separate caches --
+        // project_cross round-trips its own cross K/V per audio window.
+        auto cross = GgmlModel::from_cgraph(config.cross.string(), model, GgmlModel::CacheMode::Fresh);
+        auto runner = std::make_shared<WhisperDecoderRunner>(model, std::move(cross));
+        return {std::move(runner), std::move(model)};
     }
     if (has("inp_raw")) {
-        return std::make_shared<VisionRunner>(std::move(model));
+        auto runner = std::make_shared<VisionRunner>(model);
+        return {std::move(runner), std::move(model)};
     }
     // A bidirectional encoder: token ids, positions and a full (non-causal) mask, no KV cache.
     if (has("inp_tokens") && has("self_kq_mask") && has("out_ids")) {
-        return std::make_shared<EncoderRunner>(std::move(model), config);
+        auto runner = std::make_shared<EncoderRunner>(model, config);
+        return {std::move(runner), std::move(model)};
     }
     if (has("inp_tokens") && model->node_count() <= 2) {
-        return std::make_shared<TokenEmbeddingsRunner>(std::move(model));
+        auto runner = std::make_shared<TokenEmbeddingsRunner>(model);
+        return {std::move(runner), std::move(model)};
     }
     OPENVINO_THROW("[GGML] unrecognized artifact ", artifact, ": no runner handles its inputs");
 }
