@@ -12,6 +12,7 @@
 // -DENABLE_GGML_CGRAPH_LOADER=ON; it is OFF by default.
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <set>
