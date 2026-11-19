@@ -64,6 +64,8 @@ struct GgmlModel::Impl {
     ggml_cgraph* gf = nullptr;
     std::map<std::string, ggml_tensor*> wmap;  // gguf tensor name -> uploaded weight
     size_t n_kv = 0;  // baked into the graph shapes; 0 when unknown
+    // Sliding-window attention: input alias (self_kq_mask*) -> window; absent means full-causal.
+    std::map<std::string, int> swa_window;
     /// Inputs whose value the artifact carries; written once after allocation.
     std::vector<std::pair<ggml_tensor*, std::vector<uint8_t>>> constants;
     Out out;

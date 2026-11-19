@@ -141,6 +141,9 @@ void PagedDecoderRunner::forward(const std::vector<Row>& rows,
         if (starts_with(name, "inp_kv_idx")) {
             model->write_input(name, slot.data(), slot.size() * sizeof(int64_t));
         } else if (is_mask_input(name)) {
+            // A sliding-window mask keeps only the last `window` sequence positions visible
+            // (llama.cpp STANDARD: p1-p0 >= n_swa is masked); window 0 means full causal.
+            const int window = model->mask_window(name);
             std::vector<uint16_t> mask(model->input_size(name), FP16_NEG_INF);
             for (size_t r = 0; r < bucket; r++) {
                 uint16_t* row = mask.data() + r * graph.n_kv;
@@ -148,8 +151,10 @@ void PagedDecoderRunner::forward(const std::vector<Row>& rows,
                     row[slot[r]] = 0;
                     continue;
                 }
+                const size_t q = rows[r].seq_index;
+                const size_t first = window > 0 ? q - std::min(q, static_cast<size_t>(window - 1)) : 0;
                 const auto& table = tables[rows[r].seq];
-                for (size_t p = 0; p <= rows[r].seq_index; p++) {
+                for (size_t p = first; p <= q; p++) {
                     row[slot_of(table, p)] = alibi ? to_half(-static_cast<float>(rows[r].seq_index - p)) : 0;
                 }
             }

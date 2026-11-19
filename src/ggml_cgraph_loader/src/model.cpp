@@ -210,6 +210,11 @@ size_t GgmlModel::input_size(const std::string& name) const {
     return it == m_impl->out.externals.end() ? 0 : static_cast<size_t>(ggml_nelements(it->second));
 }
 
+int GgmlModel::mask_window(const std::string& name) const {
+    const auto it = m_impl->swa_window.find(name);
+    return it == m_impl->swa_window.end() ? 0 : it->second;
+}
+
 std::vector<std::string> GgmlModel::input_names() const {
     std::vector<std::string> names;
     names.reserve(m_impl->out.externals.size());

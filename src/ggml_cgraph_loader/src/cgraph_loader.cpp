@@ -734,6 +734,35 @@ struct Loader {
             }
         }
     }
+
+    // "mask_roles" marks which attention-mask input is the sliding-window one and how wide its
+    // window is. The artifact records it by leaf id; map it onto EVERY alias the loader exposed
+    // for that tensor (the ggml name and the canonical self_kq_mask* alias can both name the
+    // same leaf), so the runners window it no matter which name they write it by -- the last
+    // write to the tensor wins, and a full-causal write through one alias would defeat the
+    // window written through another.
+    void apply_mask_roles(const json& doc) {
+        if (!doc.contains("mask_roles")) {
+            return;
+        }
+        for (const auto& [id, role] : doc["mask_roles"].items()) {
+            OPENVINO_ASSERT(role.value("role", "") == "kq_mask_swa",
+                            "[GGML] unknown mask role '", role.value("role", ""), "' for ", id);
+            const int window = role.value("window", 0);
+            OPENVINO_ASSERT(window > 0 && static_cast<size_t>(window) < im.n_kv,
+                            "[GGML] mask '", id, "' declares window ", window, " but n_kv is ", im.n_kv);
+            const auto t = by_id.find(id);
+            OPENVINO_ASSERT(t != by_id.end(), "[GGML] mask_roles references unknown leaf: ", id);
+            size_t n_aliases = 0;
+            for (const auto& [name, tensor] : im.out.externals) {
+                if (tensor == t->second) {
+                    im.swa_window[name] = window;
+                    n_aliases++;
+                }
+            }
+            OPENVINO_ASSERT(n_aliases > 0, "[GGML] mask_roles leaf ", id, " has no input alias");
+        }
+    }
 };
 
 }  // namespace
@@ -751,6 +780,22 @@ json read_artifact(const std::string& cgraph_json) {
 }
 
 void build(GgmlModel::Impl& im, const json& doc) {
+    // The runners address every attention mask with ONE slot space and the graph's n_kv stride.
+    // That is sound while the masks agree on width: a dump made with llama.cpp's defaults gives
+    // each n_kv, and a NO_FILL reference dump gives each the occupancy padded to 256. The
+    // exception is swa_full=false, where the sliding-window mask is narrower than the others and
+    // the single slot space cannot address its cache -- refuse that instead of writing OOB.
+    int64_t mask_ne0 = -1;
+    for (const auto& l : doc["leaves"]) {
+        if (l["is_input"].get<bool>() && l["name"].get<std::string>().rfind("attn_inp_kq_mask", 0) == 0) {
+            const int64_t ne0 = l["ne"][0].get<int64_t>();
+            if (mask_ne0 < 0) mask_ne0 = ne0;
+            OPENVINO_ASSERT(ne0 == mask_ne0,
+                            "[GGML] attention masks disagree on width (", ne0, " vs ", mask_ne0,
+                            "): the artifact was dumped with a smaller sliding-window cache "
+                            "(swa_full=false); re-dump with llama.cpp's defaults");
+        }
+    }
     im.init_contexts();
     im.n_kv = doc.value("n_kv", 0);
 
@@ -759,6 +804,7 @@ void build(GgmlModel::Impl& im, const json& doc) {
     loader.build_nodes(doc);
     im.throw_if_unsupported();
     loader.assign_roles(doc);
+    loader.apply_mask_roles(doc);
     im.finalize();
 }
 

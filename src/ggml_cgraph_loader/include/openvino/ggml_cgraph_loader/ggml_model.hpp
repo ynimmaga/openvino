@@ -104,6 +104,10 @@ public:
     /// Element count of a graph input, for sizing a mask or position buffer.
     size_t input_size(const std::string& name) const;
 
+    /// Sliding-window width of the attention-mask input `name`, from the artifact's "mask_roles".
+    /// 0 means full causal (no SWA, or an artifact without mask_roles).
+    int mask_window(const std::string& name) const;
+
     /// Names of the graph inputs and KV caches.
     std::vector<std::string> input_names() const;
 

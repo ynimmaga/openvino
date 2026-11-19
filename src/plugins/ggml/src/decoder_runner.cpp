@@ -9,6 +9,7 @@
 #include "decoder_runner.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include "openvino/core/except.hpp"
@@ -208,8 +209,10 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
             // initialised buffer. A multi-row chunk that spans the wrap point also overwrites the
             // cells of its own prefix: positions below first + chunk - U are replaced by this
             // chunk's rows BEFORE the compute, so every row of the chunk must mask them too.
-            // (With sliding-window masks (#103) a row sees the intersection
-            // [q-U+1, q] ∩ [q-window+1, q] -- the window bound and c0 below compose by max().)
+            // A sliding-window mask additionally keeps only the last `window` positions visible
+            // (llama.cpp STANDARD: p1-p0 >= n_swa is masked; window 0 means full causal). A row
+            // sees the intersection [q-U+1, q] ∩ [q-window+1, q]; the lower bounds below compose by max().
+            const int window = model->mask_window(name);
             const size_t chunk_evict = rows.first_index + chunk > U ? rows.first_index + chunk - U : 0;
             std::vector<uint16_t> mask(model->input_size(name), FP16_NEG_INF);
             for (size_t r = 0; r < bucket; r++) {
@@ -220,7 +223,8 @@ void DecoderRunner::forward(const Rows& rows, const GraphSet::Graph& graph) {
                 }
                 const size_t q = rows.first_index + r;
                 const size_t ring_low = q >= U ? q - U + 1 : 0;
-                const size_t c0 = std::max(ring_low, chunk_evict);
+                const size_t window_low = window > 0 ? q - std::min(q, static_cast<size_t>(window - 1)) : 0;
+                const size_t c0 = std::max({ring_low, chunk_evict, window_low});
                 for (size_t c = c0; c <= q; c++) {
                     if (rows.mask[c] != 0) {
                         row[m_scratch_slots + c % U] = alibi ? to_half(-static_cast<float>(q - c)) : 0;
