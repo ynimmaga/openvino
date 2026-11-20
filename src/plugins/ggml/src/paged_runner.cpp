@@ -64,7 +64,8 @@ std::vector<PortDesc> PagedDecoderRunner::outputs() const {
 }
 
 ov::AnyMap PagedDecoderRunner::properties() const {
-    return {{"KV_CACHE_MAX_BLOCKS", m_pool_blocks}};
+    return {{"KV_CACHE_MAX_BLOCKS", m_pool_blocks},
+            {"GGML_KV_CAPACITY", static_cast<uint64_t>(m_pool_blocks) * BLOCK_SIZE}};
 }
 
 std::string PagedDecoderRunner::backend_name() const {
