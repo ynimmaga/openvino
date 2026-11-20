@@ -11,6 +11,7 @@
 #include "ocl_engine.hpp"
 #include "ocl_stream.hpp"
 #include "ocl_event.hpp"
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 
@@ -50,11 +51,10 @@ static int get_cl_map_type(mem_lock_type type) {
     }
 }
 
-gpu_buffer::gpu_buffer(ocl_engine* engine,
-                       const layout& layout)
-    : memory(engine, layout, allocation_type::cl_mem, nullptr)
-    , _buffer(engine->get_cl_context(), CL_MEM_READ_WRITE, size()) {
-    m_mem_tracker = std::make_shared<MemoryTracker>(engine, _buffer.get(), layout.bytes_count(), allocation_type::cl_mem);
+gpu_buffer::gpu_buffer(ocl_engine* engine, const layout& layout) : memory(engine, layout, allocation_type::cl_mem, nullptr) {
+    const auto actual_bytes_count = std::max<size_t>(_bytes_count, 1);
+    _buffer = cl::Buffer(engine->get_cl_context(), CL_MEM_READ_WRITE, actual_bytes_count);
+    m_mem_tracker = std::make_shared<MemoryTracker>(engine, _buffer.get(), actual_bytes_count, allocation_type::cl_mem);
 }
 
 gpu_buffer::gpu_buffer(ocl_engine* engine,
@@ -67,7 +67,7 @@ gpu_buffer::gpu_buffer(ocl_engine* engine,
 void* gpu_buffer::lock(const stream& stream, mem_lock_type type) {
     const auto& cl_stream = downcast<const ocl_stream>(stream);
     std::lock_guard<std::mutex> locker(_mutex);
-    if (0 == _lock_count) {
+    if (0 == _lock_count && size() != 0) {
         try {
              _mapped_ptr = cl_stream.get_cl_queue().enqueueMapBuffer(_buffer, CL_TRUE, get_cl_map_type(type), 0, size());
         } catch (cl::Error const& err) {
@@ -82,9 +82,11 @@ void gpu_buffer::unlock(const stream& stream) {
     const auto& cl_stream = downcast<const ocl_stream>(stream);
     std::lock_guard<std::mutex> locker(_mutex);
     _lock_count--;
-    if (0 == _lock_count) {
+    if (0 == _lock_count && _mapped_ptr != nullptr) {
         try {
-            cl_stream.get_cl_queue().enqueueUnmapMemObject(_buffer, _mapped_ptr);
+            cl::Event ev;
+            cl_stream.get_cl_queue().enqueueUnmapMemObject(_buffer, _mapped_ptr, nullptr, &ev);
+            ev.wait();
         } catch (cl::Error const& err) {
             OPENVINO_THROW(OCL_ERR_MSG_FMT(err));
         }
@@ -137,8 +139,9 @@ shared_mem_params gpu_buffer::get_internal_params(runtime_types rt_type) const {
 
 event::ptr gpu_buffer::copy_from(stream& stream, const void* data_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     check_boundaries(SIZE_MAX, src_offset, _bytes_count, dst_offset, size, "gpu_buffer::copy_from(void*)");
 
@@ -153,8 +156,9 @@ event::ptr gpu_buffer::copy_from(stream& stream, const void* data_ptr, size_t sr
 
 event::ptr gpu_buffer::copy_from(stream& stream, const memory& src_mem, size_t src_offset, size_t dst_offset, size_t size, bool blocking) {
     auto result_event = create_event(stream, size, false);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     check_boundaries(src_mem.size(), src_offset, _bytes_count, dst_offset, size, "gpu_buffer::copy_from(memory&)");
 
@@ -177,8 +181,9 @@ event::ptr gpu_buffer::copy_from(stream& stream, const memory& src_mem, size_t s
             TRY_CATCH_CL_ERROR(
                 cl_stream->get_cl_queue().enqueueCopyBuffer(cl_mem_buffer->get_buffer(), get_buffer(), src_offset, dst_offset, size, nullptr, ev_ocl));
 
-            if (blocking)
+            if (blocking) {
                 result_event->wait();
+            }
 
             return result_event;
         }
@@ -189,8 +194,9 @@ event::ptr gpu_buffer::copy_from(stream& stream, const memory& src_mem, size_t s
 
 event::ptr gpu_buffer::copy_to(stream& stream, void* data_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) const {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     check_boundaries(_bytes_count, src_offset, SIZE_MAX, dst_offset, size, "gpu_buffer::copy_to(void*)");
 
@@ -363,7 +369,9 @@ void gpu_image2d::unlock(const stream& stream) {
     _lock_count--;
     if (0 == _lock_count) {
         try {
-            cl_stream.get_cl_queue().enqueueUnmapMemObject(_buffer, _mapped_ptr);
+            cl::Event ev;
+            cl_stream.get_cl_queue().enqueueUnmapMemObject(_buffer, _mapped_ptr, nullptr, &ev);
+            ev.wait();
         } catch (cl::Error const& err) {
             OPENVINO_THROW(OCL_ERR_MSG_FMT(err));
         }
@@ -387,8 +395,9 @@ shared_mem_params gpu_image2d::get_internal_params(runtime_types rt_type) const 
 
 event::ptr gpu_image2d::copy_from(stream& stream, const void* data_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     OPENVINO_ASSERT(dst_offset == 0, "[GPU] Unsupported dst_offset value for gpu_image2d::copy_from() function");
     OPENVINO_ASSERT(size == _bytes_count, "[GPU] Unsupported data_size value for gpu_image2d::copy_from() function");
@@ -405,8 +414,9 @@ event::ptr gpu_image2d::copy_from(stream& stream, const void* data_ptr, size_t s
 
 event::ptr gpu_image2d::copy_from(stream& stream, const memory& src_mem, size_t src_offset, size_t dst_offset, size_t size, bool blocking) {
     auto result_event = create_event(stream, size, false);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     OPENVINO_ASSERT(src_mem.get_layout().format.is_image_2d(), "Unsupported buffer type for gpu_image2d::copy_from() function");
     OPENVINO_ASSERT(src_offset == 0, "[GPU] Unsupported dst_offset value for gpu_image2d::copy_from() function");
@@ -420,16 +430,18 @@ event::ptr gpu_image2d::copy_from(stream& stream, const memory& src_mem, size_t 
     TRY_CATCH_CL_ERROR(
         cl_stream->get_cl_queue().enqueueCopyImage(cl_image_mem->get_buffer(), get_buffer(), {0, 0, 0}, {0, 0, 0}, {_width, _height, 1}, nullptr, cl_event));
 
-    if (blocking)
+    if (blocking) {
         cl_event->wait();
+    }
 
     return result_event;
 }
 
 event::ptr gpu_image2d::copy_to(stream& stream, void* data_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) const {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     OPENVINO_ASSERT(src_offset == 0, "[GPU] Unsupported src_offset value for gpu_image2d::copy_from() function");
     OPENVINO_ASSERT(size == _bytes_count, "[GPU] Unsupported data_size value for gpu_image2d::copy_from() function");
@@ -493,8 +505,9 @@ gpu_usm::gpu_usm(ocl_engine* engine, const layout& layout, allocation_type type)
     , _buffer(engine->get_usm_helper())
     , _host_buffer(engine->get_usm_helper()) {
     auto actual_bytes_count = _bytes_count;
-    if (actual_bytes_count == 0)
+    if (actual_bytes_count == 0) {
         actual_bytes_count = 1;
+    }
 
     std::vector<cl_mem_properties_intel> properties = {0};
     if (engine->get_enable_large_allocations()) {
@@ -503,13 +516,13 @@ gpu_usm::gpu_usm(ocl_engine* engine, const layout& layout, allocation_type type)
 
     switch (get_allocation_type()) {
     case allocation_type::usm_host:
-        _buffer.allocateHost(actual_bytes_count, &properties[0]);
+        _buffer.allocateHost(actual_bytes_count, properties.data());
         break;
     case allocation_type::usm_shared:
-        _buffer.allocateShared(actual_bytes_count, &properties[0]);
+        _buffer.allocateShared(actual_bytes_count, properties.data());
         break;
     case allocation_type::usm_device:
-        _buffer.allocateDevice(actual_bytes_count, &properties[0]);
+        _buffer.allocateDevice(actual_bytes_count, properties.data());
         break;
     default:
         OPENVINO_THROW("[GPU] gpu_usm allocation type: unknown unified shared memory type!");
@@ -522,7 +535,9 @@ void* gpu_usm::lock(const stream& stream, mem_lock_type type) {
     std::lock_guard<std::mutex> locker(_mutex);
     if (0 == _lock_count) {
         const auto& cl_stream = downcast<const ocl_stream>(stream);
-        if (get_allocation_type() == allocation_type::usm_device) {
+        if (get_allocation_type() == allocation_type::usm_device && _bytes_count == 0) {
+            _mapped_ptr = nullptr;
+        } else if (get_allocation_type() == allocation_type::usm_device) {
             GPU_DEBUG_LOG << "Copy usm_device buffer to host buffer." << std::endl;
             _host_buffer.allocateHost(_bytes_count);
             // Always copy device data to host buffer (treat write as read_write internally).
@@ -538,7 +553,7 @@ void* gpu_usm::lock(const stream& stream, mem_lock_type type) {
         } else {
             _mapped_ptr = _buffer.get();
         }
-    } else if (get_allocation_type() == allocation_type::usm_device) {
+    } else if (get_allocation_type() == allocation_type::usm_device && _bytes_count != 0) {
         if (type != mem_lock_type::read) {
             _copy_back_to_device = true;
         }
@@ -552,7 +567,7 @@ void gpu_usm::unlock(const stream& stream) {
     OPENVINO_ASSERT(_lock_count != 0, "[GPU] Trying to unlock an already unlocked buffer");
     _lock_count--;
     if (0 == _lock_count) {
-        if (get_allocation_type() == allocation_type::usm_device) {
+        if (get_allocation_type() == allocation_type::usm_device && _bytes_count != 0) {
             if (_copy_back_to_device) {
                 const auto& cl_stream = downcast<const ocl_stream>(stream);
                 try {
@@ -579,13 +594,14 @@ event::ptr gpu_usm::fill(stream& stream, unsigned char pattern, const std::vecto
     auto& ev_ocl = downcast<ocl_event>(ev.get())->get();
     auto dep_ev_ocl = utils::get_cl_events(dep_events);
     try {
-        cl_stream.get_usm_helper().enqueue_fill_mem(cl_stream.get_cl_queue(),
-                                                    _buffer.get(),
-                                                    static_cast<const void*>(&pattern),
-                                                    sizeof(unsigned char),
-                                                    _bytes_count,
-                                                    dep_ev_ocl.empty() ? nullptr : &dep_ev_ocl,
-                                                    &ev_ocl);
+        cl_int err = cl_stream.get_usm_helper().enqueue_fill_mem(cl_stream.get_cl_queue(),
+                                                                 _buffer.get(),
+                                                                 static_cast<const void*>(&pattern),
+                                                                 sizeof(unsigned char),
+                                                                 _bytes_count,
+                                                                 dep_ev_ocl.empty() ? nullptr : &dep_ev_ocl,
+                                                                 &ev_ocl);
+        OPENVINO_ASSERT(err == CL_SUCCESS, "[GPU] clEnqueueMemFillINTEL failed with error code: ", err);
         if (blocking) {
             ev_ocl.wait();
         }
@@ -602,8 +618,9 @@ event::ptr gpu_usm::fill(stream& stream, const std::vector<event::ptr>& dep_even
 
 event::ptr gpu_usm::copy_from(stream& stream, const void* data_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     check_boundaries(SIZE_MAX, src_offset, _bytes_count, dst_offset, size, "gpu_usm::copy_from(void*)");
 
@@ -619,8 +636,9 @@ event::ptr gpu_usm::copy_from(stream& stream, const void* data_ptr, size_t src_o
 
 event::ptr gpu_usm::copy_from(stream& stream, const memory& src_mem, size_t src_offset, size_t dst_offset, size_t size, bool blocking) {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     check_boundaries(src_mem.size(), src_offset, _bytes_count, dst_offset, size, "gpu_usm::copy_from(memory&)");
 
@@ -653,8 +671,9 @@ event::ptr gpu_usm::copy_from(stream& stream, const memory& src_mem, size_t src_
 
 event::ptr gpu_usm::copy_to(stream& stream, void* data_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) const {
     auto result_event = create_event(stream, size, blocking);
-    if (size == 0)
+    if (size == 0) {
         return result_event;
+    }
 
     check_boundaries(_bytes_count, src_offset, SIZE_MAX, dst_offset, size, "gpu_usm::copy_to(void*)");
 
@@ -733,7 +752,7 @@ allocation_type gpu_usm::detect_allocation_type(const ocl_engine* engine, const 
     return alloc_type;
 }
 
-std::vector<cl_mem> ocl_surfaces_lock::get_handles(std::vector<memory::ptr> mem) const {
+std::vector<cl_mem> ocl_surfaces_lock::get_handles(std::vector<memory::ptr> mem) {
     std::vector<cl_mem> res;
     for (auto& m : mem) {
         auto mem_type = m->get_internal_params().mem_type;

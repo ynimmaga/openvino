@@ -71,8 +71,9 @@ struct crop_impl : public typed_primitive_impl<crop> {
         std::vector<int64_t> steps_vec(input_shape.size(), 1);
         std::vector<int64_t> stop_vec;
 
-        for (size_t i = 0; i < start_vec.size(); i++)
+        for (size_t i = 0; i < start_vec.size(); i++) {
             stop_vec.push_back(start_vec[i] + output_shape[i]);
+        }
 
 
         auto start_tensor = ov::Tensor(ov::element::i64, {start_vec.size()}, start_vec.data());
@@ -89,8 +90,9 @@ struct crop_impl : public typed_primitive_impl<crop> {
 
         output_host_tensors.push_back(output_tensor);
 
-        if (!op)
+        if (!op) {
             op = std::make_shared<ov::op::v8::Slice>();
+        }
 
         OPENVINO_ASSERT(op->evaluate(output_host_tensors, input_host_tensors),
                         "[GPU] Couldn't execute crop primitive with id ", instance.id());
@@ -99,10 +101,10 @@ struct crop_impl : public typed_primitive_impl<crop> {
             return stream.group_events(events);
         }
 
-        return make_output_event(stream, instance.is_output());
+        return make_output_event(stream, instance.needs_completion_event());
     }
 
-    void init_kernels(const kernels_cache& , const kernel_impl_params&) override {}
+    void init_kernels(const kernels_cache& /*kernels_cache*/, const kernel_impl_params& /*params*/) override {}
 
     void update(primitive_inst& inst, const kernel_impl_params& impl_param) override {}
 

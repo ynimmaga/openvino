@@ -65,7 +65,7 @@ GemmKernelBase::DispatchData GemmKernelTiledOpt::SetDefault(const gemm_params& p
     return dispatchData;
 }
 
-GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gemm_params& params) const {
+GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gemm_params& params) {
     const auto& output = params.outputs[0];
 
     GemmKernelTiledOpt::GemmTuningData tuning_data;
@@ -87,7 +87,7 @@ GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gem
         tuning_data.tile_k_size = tuning_data.simd_size;
         tuning_data.tile_m_size = tuning_data.simd_size;
 
-        bool leftovers = ((m_size % tuning_data.tile_m_size) != 0u) || ((k_size % tuning_data.tile_k_size) != 0u) || ((n_size % tuning_data.tile_n_size) != 0u);
+        bool leftovers = ((m_size % tuning_data.tile_m_size) != 0U) || ((k_size % tuning_data.tile_k_size) != 0U) || ((n_size % tuning_data.tile_n_size) != 0U);
 
         if (leftovers || total_batches > 1 || params.transpose_input0 || params.transpose_input1 || !IsSIMDSizeSupported(params.engineInfo, 8)) {
             tuning_data.simd_size = 16;
@@ -98,8 +98,9 @@ GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gem
         // Increasing tile_n_size has performance improvement when m_size and n_size are not shallow and n_size is aligned at 32.
         // TODO: Support TILE_K_LEFTOVER true case at static shape
         if (m_size >= 128 && n_size >= 128 && (n_size % 32 == 0) && tuning_data.simd_size == 16 &&
-            (k_size % tuning_data.tile_k_size == 0) && params.fused_ops.empty())
+            (k_size % tuning_data.tile_k_size == 0) && params.fused_ops.empty()) {
             tuning_data.tile_n_size = 32;
+        }
 
         GPU_DEBUG_LOG << params.layerID << ": m_size: " << m_size << ", n_size: " << n_size << ", k_size: " << k_size << std::endl;
     } else {
@@ -202,27 +203,30 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
         });
 
         bool transpose_output = (!params.output_order.empty() && (params.output_order.back() != (static_cast<int>(params.output_order.size()) - 1)));
-        if (transpose_output)
+        if (transpose_output) {
             jit.AddConstant(MakeJitConstant("TRANSPOSE_OUTPUT", 2 /* set as TRANSPOSE_OTHER */));
-        else
+        } else {
             jit.AddConstant(MakeJitConstant("TRANSPOSE_OUTPUT", 0 /* set as TRANSPOSE_X_LAST */));
+        }
 
-        if (dims0_padded.has_dynamic_pad)
+        if (dims0_padded.has_dynamic_pad) {
             jit.AddConstant(MakeJitConstant("INPUT0_HAS_DYNAMIC_PADDING", 1));
-        if (dims1_padded.has_dynamic_pad)
+        }
+        if (dims1_padded.has_dynamic_pad) {
             jit.AddConstant(MakeJitConstant("INPUT1_HAS_DYNAMIC_PADDING", 1));
+        }
     } else {
         auto get_transposed_dim_size = [](const kernel_selector::DataTensor &data_tensor,
                                           const std::vector<int64_t>& dims_order, const std::string dim) {
             int64_t target_dim_idx;
             const size_t rank = data_tensor.GetDims().size();
-            if (dims_order.size() > 1 && dim.compare("Y") == 0) {
+            if (dims_order.size() > 1 && dim == "Y") {
                 target_dim_idx = dims_order.at(dims_order.size() - 2);
-            } else if (!dims_order.empty() && dim.compare("X") == 0) {
+            } else if (!dims_order.empty() && dim == "X") {
                 target_dim_idx = dims_order.back();
-            } else if (dims_order.empty() && dim.compare("Y") == 0) {
+            } else if (dims_order.empty() && dim == "Y") {
                 target_dim_idx = rank - 2;
-            } else if (dims_order.empty() && dim.compare("X") == 0) {
+            } else if (dims_order.empty() && dim == "X") {
                 target_dim_idx = rank - 1;
             } else {
                 OPENVINO_THROW("Unsupported dimension: ", dim);
@@ -292,10 +296,12 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
             MakeJitConstant("TR_X", GetTransposedDims(params.output_order, true).at(7)),
         });
 
-        if (params.inputs[0].LogicalSize() != params.inputs[0].PhysicalSize())
+        if (params.inputs[0].LogicalSize() != params.inputs[0].PhysicalSize()) {
             jit.AddConstant(MakeJitConstant("INPUT0_HAS_PADDING", 1));
-        if (params.inputs[1].LogicalSize() != params.inputs[1].PhysicalSize())
+        }
+        if (params.inputs[1].LogicalSize() != params.inputs[1].PhysicalSize()) {
             jit.AddConstant(MakeJitConstant("INPUT1_HAS_PADDING", 1));
+        }
     }
 
     if (tuning_data.tile_k_size > tuning_data.simd_size) {
@@ -457,13 +463,15 @@ KernelsPriority GemmKernelTiledOpt::GetKernelsPriority(const Params& params) con
 }
 
 bool GemmKernelTiledOpt::Validate(const Params& params) const {
-    if (!Parent::Validate(params))
+    if (!Parent::Validate(params)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     const auto& gmm_params = static_cast<const gemm_params&>(params);
 
-    if (gmm_params.outputs[0].PitchesDifferFromLogicalDims())
+    if (gmm_params.outputs[0].PitchesDifferFromLogicalDims()) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     size_t num_inputs = (gmm_params.indirect_input0 || gmm_params.indirect_input1) ? gmm_params.inputs.size() - 1 : gmm_params.inputs.size();
     for (size_t input_idx = 0; input_idx < num_inputs; ++input_idx) {
@@ -482,16 +490,20 @@ bool GemmKernelTiledOpt::Validate(const Params& params) const {
             proper_pad_y |= input.Y().pad.is_dynamic;
         }
 
-        if (!proper_pad_x || !proper_pad_y || input.Z().pad.Total() != 0 || !proper_pad_f)
+        if (!proper_pad_x || !proper_pad_y || input.Z().pad.Total() != 0 || !proper_pad_f) {
             DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
     }
 
-    if (gmm_params.has_dynamic_inputs() && !gmm_params.is_shape_agnostic)
+    if (gmm_params.has_dynamic_inputs() && !gmm_params.is_shape_agnostic) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
-    for (size_t i = 1; i < num_inputs; i++)
-        if (gmm_params.inputs[0].GetDType() != gmm_params.inputs[i].GetDType())
+    for (size_t i = 1; i < num_inputs; i++) {
+        if (gmm_params.inputs[0].GetDType() != gmm_params.inputs[i].GetDType()) {
             DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
+    }
 
     return true;
 }

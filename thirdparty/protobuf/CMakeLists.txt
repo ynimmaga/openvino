@@ -9,6 +9,11 @@
 if(ENABLE_THREAD_SANITIZER AND OV_COMPILER_IS_CLANG)
     string(REPLACE "-ltsan" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
     string(REPLACE "-shared-libsan" "" CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+    # protobuf 26 vendors abseil/utf8_range; disable TSan for the whole subtree so
+    # instrumented deps can't leak into the -fno-sanitize=thread protoc link
+    string(APPEND CMAKE_C_FLAGS   " -fno-sanitize=thread")
+    string(APPEND CMAKE_CXX_FLAGS " -fno-sanitize=thread")
+    string(REPLACE "-shared-libsan" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 endif()
 
 set(BUILD_SHARED_LIBS OFF)
@@ -97,10 +102,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR OV_COMPILER_IS_CLANG OR OV_COMPILER_IS_INTEL_LLVM
     if(protobuf_BUILD_PROTOC_BINARIES)
         list(APPEND _protoc_libs protoc libprotoc libprotobuf)
         set_target_properties(${_protoc_libs} PROPERTIES
-            CXX_VISIBILITY_PRESET default
-            C_VISIBILITY_PRESET default
-            VISIBILITY_INLINES_HIDDEN OFF
             INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
+        if(NOT APPLE)
+            set_target_properties(${_protoc_libs} PROPERTIES
+                CXX_VISIBILITY_PRESET default
+                C_VISIBILITY_PRESET default
+                VISIBILITY_INLINES_HIDDEN OFF)
+        endif()
     endif()
     # protobuf is incompatible with thread sanitizers
     if(ENABLE_THREAD_SANITIZER)

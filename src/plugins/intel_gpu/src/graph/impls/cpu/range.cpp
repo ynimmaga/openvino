@@ -50,15 +50,17 @@ struct range_impl : public typed_primitive_impl<range> {
         ov::TensorVector output_host_tensors;
 
         std::vector<memory::ptr> input_mem_ptrs;
-        for (size_t i = 0; i < instance.dependencies().size(); i++)
+        for (size_t i = 0; i < instance.dependencies().size(); i++) {
             input_mem_ptrs.push_back(instance.dep_memory_ptr(i));
+        }
 
         auto output_mem_ptr = instance.output_memory_ptr();
 
         cldnn::mem_lock<uint8_t, mem_lock_type::read_write> output_lock(output_mem_ptr, stream);
 
-        for (size_t i = 0; i < input_mem_ptrs.size(); i++)
+        for (size_t i = 0; i < input_mem_ptrs.size(); i++) {
             input_host_tensors.push_back(make_tensor(params->input_layouts[i], input_mem_ptrs[i]->lock(stream, mem_lock_type::read)));
+        }
 
         output_host_tensors.push_back(make_tensor(params->output_layouts[0], output_lock.data()));
 
@@ -72,17 +74,18 @@ struct range_impl : public typed_primitive_impl<range> {
         OPENVINO_ASSERT(op->evaluate(output_host_tensors, input_host_tensors),
                         "[GPU] Couldn't execute range primitive with id ", instance.id());
 
-        for (size_t i = 0; i < input_mem_ptrs.size(); i++)
+        for (size_t i = 0; i < input_mem_ptrs.size(); i++) {
             input_mem_ptrs[i]->unlock(stream);
+        }
 
         if (pass_through_events) {
             return stream.group_events(events);
         }
 
-        return make_output_event(stream, instance.is_output());
+        return make_output_event(stream, instance.needs_completion_event());
     }
 
-    void init_kernels(const kernels_cache& , const kernel_impl_params&) override {}
+    void init_kernels(const kernels_cache& /*kernels_cache*/, const kernel_impl_params& /*params*/) override {}
 
     void update(primitive_inst& inst, const kernel_impl_params& impl_param) override {}
 

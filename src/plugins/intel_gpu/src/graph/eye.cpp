@@ -24,8 +24,9 @@ std::vector<layout> eye_inst::calc_output_layouts(eye_node const& /*node*/, cons
 
     const auto& memory_deps = impl_param.memory_deps;
     for (size_t i = 0; i < 4; i++) {
-        if (memory_deps.count(i) > 0)
+        if (memory_deps.count(i) > 0) {
             const_data.emplace(i, memory_deps.at(i));
+        }
     }
 
     auto ta = cldnn::make_tensor_accessor(const_data);
@@ -42,7 +43,7 @@ std::vector<layout> eye_inst::calc_output_layouts(eye_node const& /*node*/, cons
 
 template std::vector<layout> eye_inst::calc_output_layouts<ov::PartialShape>(eye_node const& node, const kernel_impl_params& impl_param);
 
-layout eye_inst::calc_output_layout(eye_node const& node, const kernel_impl_params&) {
+layout eye_inst::calc_output_layout(const eye_node& node, const kernel_impl_params& /*unused*/) {
     auto primitive = node.get_primitive();
     return {*(primitive->output_data_types[0]), node.get_input_layout().format, primitive->output_shape};
 }
@@ -53,8 +54,9 @@ std::string eye_inst::to_string(eye_node const& node) {
     eye_info.add("rows id", node.get_dependency(0).id());
     eye_info.add("cols id", node.get_dependency(1).id());
     eye_info.add("diagInd id", node.get_dependency(2).id());
-    if (node.get_dependencies().size() == 4)
+    if (node.get_dependencies().size() == 4) {
         eye_info.add("batchShape id", node.get_dependency(3).id());
+    }
     node_info->add("slice info", eye_info);
     std::stringstream primitive_description;
     node_info->dump(primitive_description);

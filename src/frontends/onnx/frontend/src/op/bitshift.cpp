@@ -4,17 +4,11 @@
 
 #include "core/operator_set.hpp"
 #include "exceptions.hpp"
-#include "openvino/op/constant.hpp"
-#include "openvino/op/divide.hpp"
-#include "openvino/op/multiply.hpp"
-#include "openvino/op/power.hpp"
+#include "openvino/op/bitwise_left_shift.hpp"
+#include "openvino/op/bitwise_right_shift.hpp"
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace ai_onnx {
-namespace opset_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector bitshift(const ov::frontend::onnx::Node& node) {
     const ov::Output<ov::Node> input_x = node.get_ov_inputs().at(0);
     const ov::Output<ov::Node> input_y = node.get_ov_inputs().at(1);
@@ -29,19 +23,15 @@ ov::OutputVector bitshift(const ov::frontend::onnx::Node& node) {
                      "attribute. Given: ",
                      direction);
 
-    auto shift =
-        std::make_shared<v1::Power>(v0::Constant::create(input_y.get_element_type(), ov::Shape{1}, {2}), input_y);
-
+    // Use the native bitwise shift operations so that results wrap around on overflow
+    // exactly like the ONNX BitShift specification requires. The previous decomposition into
+    // Power + Multiply/Divide saturated overflowed values on some plugins (e.g. u8 on CPU).
     if (direction == "RIGHT") {
-        return {std::make_shared<v1::Divide>(input_x, shift)};
+        return {std::make_shared<v15::BitwiseRightShift>(input_x, input_y)};
     } else {
-        return {std::make_shared<v1::Multiply>(input_x, shift)};
+        return {std::make_shared<v15::BitwiseLeftShift>(input_x, input_y)};
     }
 }
 
 ONNX_OP("BitShift", OPSET_SINCE(1), ai_onnx::opset_1::bitshift);
-}  // namespace opset_1
-}  // namespace ai_onnx
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

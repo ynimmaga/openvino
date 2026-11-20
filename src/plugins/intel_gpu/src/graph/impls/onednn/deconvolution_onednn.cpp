@@ -154,9 +154,7 @@ public:
         ob << typed_pd->get_padding_r();
         ob << typed_pd->bias_desc().is_zero();
 
-        std::vector<uint8_t> prim_cache;
-        prim_cache = _prim.get_cache_blob();
-        ob << prim_cache;
+        ob << get_cache_blob();
 #endif
     }
 
@@ -184,21 +182,32 @@ public:
         ib >> zero_bias;
 
         if (zero_bias) {
-            auto prim_desc = std::make_shared<dnnl::deconvolution_forward::primitive_desc>(
-                                    ib.get_engine().get_onednn_engine(),
-                                    dnnl::prop_kind::forward_inference, dnnl::algorithm::deconvolution_direct,
-                                    input_md, weights_md, output_md,
-                                    strides, dilates, padding_l, padding_r,
-                                    *_attrs.get());
+            auto prim_desc = std::make_shared<dnnl::deconvolution_forward::primitive_desc>(ib.get_engine().get_onednn_engine(),
+                                                                                           dnnl::prop_kind::forward_inference,
+                                                                                           dnnl::algorithm::deconvolution_direct,
+                                                                                           input_md,
+                                                                                           weights_md,
+                                                                                           output_md,
+                                                                                           strides,
+                                                                                           dilates,
+                                                                                           padding_l,
+                                                                                           padding_r,
+                                                                                           *_attrs);
             _pd = *prim_desc;
         } else {
             auto bias_md = onednn::layout_to_memory_desc_flatten(impl_params->get_input_layout(2), dnnl::memory::format_tag::any);
-            auto prim_desc = std::make_shared<dnnl::deconvolution_forward::primitive_desc>(
-                                    ib.get_engine().get_onednn_engine(),
-                                    dnnl::prop_kind::forward_inference, dnnl::algorithm::deconvolution_direct,
-                                    input_md, weights_md, bias_md, output_md,
-                                    strides, dilates, padding_l, padding_r,
-                                    *_attrs.get());
+            auto prim_desc = std::make_shared<dnnl::deconvolution_forward::primitive_desc>(ib.get_engine().get_onednn_engine(),
+                                                                                           dnnl::prop_kind::forward_inference,
+                                                                                           dnnl::algorithm::deconvolution_direct,
+                                                                                           input_md,
+                                                                                           weights_md,
+                                                                                           bias_md,
+                                                                                           output_md,
+                                                                                           strides,
+                                                                                           dilates,
+                                                                                           padding_l,
+                                                                                           padding_r,
+                                                                                           *_attrs);
             _pd = *prim_desc;
         }
 
@@ -207,7 +216,7 @@ public:
 
         _scratchpad_md = _pd.scratchpad_desc();
 
-        _prim = dnnl::primitive(_pd, prim_cache);
+        _prim = make_primitive_from_blob(prim_cache);
 #endif
     }
 
@@ -235,8 +244,9 @@ in_out_fmts_t DeconvolutionImplementationManager::query_formats(const program_no
     auto prim_desc = onednn::get_deconvolution_primitive_descriptor(*node.get_kernel_impl_params(), dnnl::primitive_attr(), dnnl::memory::format_tag::any);
 
     for (size_t idx = 0 ; idx < node.get_dependencies().size() ; idx++) {
-        if (node.get_dependency(idx).is_constant())
+        if (node.get_dependency(idx).is_constant()) {
             continue;
+        }
 
         // Conv or deconv gets a preferred format for its data input based on source memory description
         // But an input format for fused post-ops should be same with an output format of conv/deconv
@@ -254,8 +264,9 @@ in_out_fmts_t DeconvolutionImplementationManager::query_formats(const program_no
         }
 
         // WA: Avoid b_fs_yx_fsv2 because Onednn tag aBcd2b is not declared.
-        if (src_fmt == format::b_fs_yx_fsv2)
+        if (src_fmt == format::b_fs_yx_fsv2) {
             src_fmt = format::byxf;
+        }
 
         in_fmts[idx] = src_fmt;
     }
@@ -263,8 +274,9 @@ in_out_fmts_t DeconvolutionImplementationManager::query_formats(const program_no
     out_fmts[0] = onednn::find_data_format(prim_desc->dst_desc());
 
     // WA: Avoid b_fs_yx_fsv2 because Onednn tag aBcd2b is not declared.
-    if (out_fmts[0] == format::b_fs_yx_fsv2)
+    if (out_fmts[0] == format::b_fs_yx_fsv2) {
         out_fmts[0] = format::byxf;
+    }
 
     return {in_fmts, out_fmts};
 }

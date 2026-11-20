@@ -20,8 +20,9 @@ static void ensure_i32_offsets(ProgramBuilder& p,
                                std::vector<cldnn::input_info>& inputs,
                                size_t offsets_idx) {
     const auto offsets_dtype = cldnn::element_type_to_data_type(op->get_input_element_type(offsets_idx));
-    if (offsets_dtype == cldnn::data_types::i32)
+    if (offsets_dtype == cldnn::data_types::i32) {
         return;
+    }
     auto reorder_id = inputs[offsets_idx].pid + "_" + op->get_friendly_name() + ProgramBuilder::m_preProcessTag;
     auto fmt = cldnn::format::get_default_format(op->get_input_partial_shape(offsets_idx).size());
     auto reorder_prim = cldnn::reorder(reorder_id, inputs[offsets_idx], fmt, cldnn::data_types::i32);
@@ -106,7 +107,7 @@ static void CreateGroupedMatMulCompressedOp(ProgramBuilder& p,
         const auto scale_pid = inputs[2].pid;
 
         cldnn::primitive_id zp_pid;
-        float zp_scalar_value = 0.0f;
+        float zp_scalar_value = 0.0F;
         bool has_scalar_zp = false;
         if (op->get_input_size() > 3) {
             constexpr size_t zp_idx = 3;
@@ -143,7 +144,7 @@ static void CreateGroupedMatMulCompressedOp(ProgramBuilder& p,
 
     const auto scale = inputs[3];
     cldnn::input_info zp = {};
-    float zp_scalar_value = 0.0f;
+    float zp_scalar_value = 0.0F;
     bool has_scalar_zp = false;
     if (op->get_input_size() > 4) {
         constexpr size_t zp_idx = 4;

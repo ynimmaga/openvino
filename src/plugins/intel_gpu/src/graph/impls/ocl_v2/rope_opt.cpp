@@ -20,6 +20,7 @@ size_t get_vec_size(const RuntimeParams& params) {
     size_t vec_size = 1;
     switch (input.data_type) {
     case ov::element::f16:
+    case ov::element::bf16:
         vec_size = 16;
         break;
     case ov::element::f32:
@@ -35,17 +36,27 @@ size_t get_vec_size(const RuntimeParams& params) {
 
     // Some models use f32 precision for input1 (cos) and input2 (sin) for better accuracy.
     // If input0 is not f32, we set vec_size as 1 for simple type conversion.
-    if (input1.data_type == ov::element::f32 && input.data_type != input1.data_type)
+    if (input1.data_type == ov::element::f32 && input.data_type != input1.data_type) {
         vec_size = 1;
+    }
 
     if (desc->config.is_qwen) {
-        auto count = desc->config.head_cnt * std::max(desc->config.rotary_ndims / 2ul, desc->config.head_size - desc->config.rotary_ndims);
+        auto count = desc->config.head_cnt * std::max(desc->config.rotary_ndims / 2UL, desc->config.head_size - desc->config.rotary_ndims);
         if (count % vec_size != 0) {
             vec_size = 1;
         }
     }
 
     return vec_size;
+}
+
+// The fused RMSNorm reduction relies on the non-reversed GWS layout, which is only used when VEC_SIZE > 1.
+bool fused_rms_enabled(const RuntimeParams& params) {
+    if (!params.typed_desc<rope>()->fuse_rms_norm) {
+        return false;
+    }
+    OPENVINO_ASSERT(get_vec_size(params) > 1, "[GPU] rope: a fused RMSNorm needs the vectorized RoPE kernel");
+    return true;
 }
 
 class RopeGenerator : public KernelGenerator {
@@ -102,16 +113,28 @@ protected:
             jit.make("RotateInterleaved", true);
         } else {
             jit.make("RotateHalf", true);
+            if (desc->config.input_interleaved) {
+                jit.make("INPUT_INTERLEAVED", true);
+            }
             if (get_vec_size(params) == 1) {
                 jit.make("REVERSED_GWS", true);
             }
         }
         jit.make("VEC_SIZE", get_vec_size(params));
-        if (params.get_input_layout(0).data_type != params.get_input_layout(1).data_type) {
+        if (fused_rms_enabled(params)) {
+            // One workgroup owns a whole head along gws[2], so the RMS reduction is workgroup-local.
+            jit.make("FUSE_RMS_NORM", true);
+            jit.make("RMS_EPSILON", desc->rms_epsilon);
+            jit.make("RMS_WORKERS", desc->config.rotary_ndims / (2 * get_vec_size(params)));
+        }
+        if (in_l.data_type == ov::element::bf16) {
+            jit.add(make_type_jit_constants("ACCUMULATOR", ov::element::f32));
+        } else if (params.get_input_layout(0).data_type != params.get_input_layout(1).data_type) {
             jit.add(make_type_jit_constants("ACCUMULATOR", params.get_input_layout(1).data_type));
         } else {
             jit.add(make_type_jit_constants("ACCUMULATOR", params.get_input_layout(0).data_type));
         }
+
         return jit;
     }
 
@@ -131,6 +154,10 @@ protected:
 
         for (uint32_t i = 0; i < num_of_inputs; i++) {
             args.push_back({ArgumentDescriptor::Types::INPUT, i});
+        }
+
+        if (fused_rms_enabled(params)) {
+            args.push_back({ArgumentDescriptor::Types::INPUT, num_of_inputs});
         }
 
         args.push_back({ArgumentDescriptor::Types::OUTPUT, 0});
@@ -153,7 +180,7 @@ protected:
                 if (cfg.is_qwen) {
                     auto b = extract_channel(ChannelName::BATCH, in_l);
                     auto f = extract_channel(ChannelName::FEATURE, in_l);
-                    wgs.global = {b, f, cfg.head_cnt * std::max(cfg.rotary_ndims / 2ul, cfg.head_size - cfg.rotary_ndims) / vec_size};
+                    wgs.global = {b, f, cfg.head_cnt * std::max(cfg.rotary_ndims / 2UL, cfg.head_size - cfg.rotary_ndims) / vec_size};
                 } else if (cfg.is_chatglm) {
                     auto b = extract_channel(ChannelName::BATCH, in_l);
                     auto f = extract_channel(ChannelName::FEATURE, in_l);
@@ -161,21 +188,21 @@ protected:
                     if (cfg.support_2d_rope) {
                         // input  [batch_size, seq_length]
                         // output [batch_size, head_count, seq_length, half_rotary_ndims]
-                        wgs.global = {b * cfg.head_cnt, f, cfg.rotary_ndims / 2ul / vec_size};
+                        wgs.global = {b * cfg.head_cnt, f, cfg.rotary_ndims / 2UL / vec_size};
                     } else {
-                        wgs.global = {b, f, cfg.head_cnt * (cfg.rotary_ndims / 2ul) / vec_size};
+                        wgs.global = {b, f, cfg.head_cnt * (cfg.rotary_ndims / 2UL) / vec_size};
                     }
                 } else if (cfg.is_ltx_video) {
                     auto b = extract_channel(ChannelName::BATCH, in_l);
                     auto f = extract_channel(ChannelName::FEATURE, in_l);
-                    wgs.global = {b, f, cfg.rotary_ndims / 2ul / vec_size};
+                    wgs.global = {b, f, cfg.rotary_ndims / 2UL / vec_size};
                 } else {
                     auto b = extract_channel(ChannelName::BATCH, out_l);
                     auto f = extract_channel(ChannelName::FEATURE, out_l);
                     auto y = extract_channel(ChannelName::Y, out_l);
-                    wgs.global = {b, f, y * cfg.rotary_ndims / 2ul / vec_size};
+                    wgs.global = {b, f, y * cfg.rotary_ndims / 2UL / vec_size};
                     if (cfg.support_3d_rope) {
-                        wgs.global = {b, f, cfg.rotary_ndims / 2ul / vec_size};
+                        wgs.global = {b, f, cfg.rotary_ndims / 2UL / vec_size};
                     }
                     // reverse gws when RotateHalf and vec_size is one
                     if (!desc->config.is_interleaved && vec_size == 1) {
@@ -186,14 +213,18 @@ protected:
                 }
 
                 // We need to set the 1st local workgroup size as large as possible for better performance.
-                if (vec_size == 1) {
+                if (fused_rms_enabled(params)) {
+                    // Keep every work item of one head in a single workgroup for the RMS reduction.
+                    wgs.local = {1, 1, cfg.rotary_ndims / (2 * vec_size)};
+                } else if (vec_size == 1) {
                     auto get_max_lws = [](size_t gws, size_t max_workgroup_size) -> size_t {
                         size_t val = 1;
                         size_t lws = 1;
                         while (((val + 1) <= max_workgroup_size) && (gws >= (val + 1))) {
                             val += 1;
-                            if (gws % val == 0)
+                            if (gws % val == 0) {
                                 lws = val;
+                            }
                         }
                         return lws;
                     };

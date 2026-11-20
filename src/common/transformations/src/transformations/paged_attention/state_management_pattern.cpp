@@ -41,6 +41,7 @@
 #include "openvino/pass/pattern/op/optional.hpp"
 #include "openvino/pass/pattern/op/or.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
+#include "openvino/util/pp.hpp"
 #include "transformations/rt_info/keep_const_precision.hpp"
 #include "transformations/utils/utils.hpp"
 
@@ -48,6 +49,7 @@ namespace pattern = ov::pass::pattern;
 using ov::pass::pattern::any_input;
 using ov::pass::pattern::Matcher;
 using ov::pass::pattern::wrap_type;
+using ov::pass::pattern::wrap_type_strict_index;
 using ov::pass::pattern::op::Or;
 
 namespace v0 = ov::op::v0;
@@ -57,10 +59,6 @@ namespace v6 = ov::op::v6;
 namespace v8 = ov::op::v8;
 namespace v13 = ov::op::v13;
 namespace v15 = ov::op::v15;
-constexpr const char* NUM_K_HEADS = "num_k_heads";
-constexpr const char* K_HEAD_SIZE = "k_head_size";
-constexpr const char* NUM_V_HEADS = "num_v_heads";
-constexpr const char* V_HEAD_SIZE = "v_head_size";
 using namespace ov::pass;
 using ov::OutputVector;
 
@@ -395,13 +393,11 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
     // TODO: Consider not specifying VariadicSplit as an input for Concat, it is not really used in the pattern, but
     // just sets more strict requirement for the graph. The risk with not specifying VariadicSplit is that it can be
     // ambiguous which part the matcher should take: KV merged part or where K and V are separate, requires experiments.
-    auto qkv_current_split_node = wrap_type<v1::VariadicSplit>({any_input(), any_input(), any_input()});
-    qkv_current_split_node->set_output_size(2);
+    auto qkv_current_split_node = wrap_type_strict_index<v1::VariadicSplit>({any_input(), any_input(), any_input()});
     auto kv_current = qkv_current_split_node->output(1);
     std::shared_ptr<ov::Node> kv_past_var, kv_current2, kv_concat, kv_current_reshaped;
     std::tie(kv_past_var, kv_current2, kv_current_reshaped, kv_concat) = kv_read_and_concat(kv_current);
-    auto kv_concat_split = wrap_type<v1::VariadicSplit>({kv_concat, any_input(), any_input()});
-    kv_concat_split->set_output_size(2);
+    auto kv_concat_split = wrap_type_strict_index<v1::VariadicSplit>({kv_concat, any_input(), any_input()});
 
     k_concat = std::make_shared<Or>(OutputVector{kv_concat_split->output(0), k_concat});
     v_concat = std::make_shared<Or>(OutputVector{kv_concat_split->output(1), v_concat});
@@ -502,7 +498,8 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
 
     auto sdpa_variants = std::make_shared<Or>(OutputVector{sdpa_with_4_inputs, sdpa_with_5_inputs, sdpa_with_6_inputs});
 
-    ov::matcher_pass_callback callback = [=, &pa_params, &results, &var_ids_to_remove](Matcher& m) {
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS, &pa_params, &results, &var_ids_to_remove](
+                                             Matcher& m) {
         const auto& pattern_map = m.get_pattern_value_map();
         const auto& real_q = pattern_map.at(q_inner);
 
@@ -564,15 +561,15 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
             std::make_shared<v1::Reshape>(q_transpose, v0::Constant::create(element::i64, Shape{2}, {0, -1}), true);
 
         ov::Output<ov::Node> k_target_layout, v_target_layout;
-        if (pattern_map.count(qkv_current_split_node)) {
+        if (m.get_pattern_map().count(qkv_current_split_node)) {
             // Fast track for merged K/V caches, based on the currently observed models topologies we don't need to
             // change layout and there is no point in the graph where it is in 4D. So `else` branch below is not
             // applicable for this case. + std::to_string(m_layer_index)
-            auto qkv_split = pattern_map.at(qkv_current_split_node).get_node_shared_ptr();
+            auto qkv_split = m.get_pattern_map().at(qkv_current_split_node);
             // TODO: Consider handling Q part as well as KV here, requires more changes in the code and sets
             // VariadicSplit before Concat as essential part of the pattern
             auto kv_split_part = qkv_split->output(1);
-            auto real_kv_concat_split = pattern_map.at(kv_concat_split).get_node_shared_ptr();
+            auto real_kv_concat_split = m.get_pattern_map().at(kv_concat_split);
             // Reaply VariadicSplit from the model after the Concat with KV merged tensor to current KV merged tensor
             // before the Concat
             auto kv_current_split = real_kv_concat_split->clone_with_new_inputs(
@@ -882,10 +879,10 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
 
         auto paged_attention =
             std::make_shared<ov::op::PagedAttentionExtension>(pa_arguments, kv_params.write_kv_cache);
-        paged_attention->get_rt_info()[NUM_K_HEADS] = num_k_heads;
-        paged_attention->get_rt_info()[K_HEAD_SIZE] = k_head_size;
-        paged_attention->get_rt_info()[NUM_V_HEADS] = num_v_heads;
-        paged_attention->get_rt_info()[V_HEAD_SIZE] = v_head_size;
+        paged_attention->get_rt_info()["num_k_heads"] = num_k_heads;
+        paged_attention->get_rt_info()["k_head_size"] = k_head_size;
+        paged_attention->get_rt_info()["num_v_heads"] = num_v_heads;
+        paged_attention->get_rt_info()["v_head_size"] = v_head_size;
 
         // The output shape of PagedAttention will be converted to [batch, 1, head_num, head_size_v], the head_size_v
         // may be different from head_size_q/head_size_k. The head_size_v could be got from the shape of value input

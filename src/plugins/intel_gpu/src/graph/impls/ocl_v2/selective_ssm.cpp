@@ -61,8 +61,9 @@ bool use_discrete_slm(const RuntimeParams& params) {
 
 size_t get_discrete_head_dim_target(const RuntimeParams& params) {
     const auto& info = params.get_device_info();
-    if (info.dev_type != cldnn::device_type::discrete_gpu)
+    if (info.dev_type != cldnn::device_type::discrete_gpu) {
         return selective_ssm_jit::default_discrete_head_dim_block;
+    }
 
     const size_t sequence_size = params.get_input_layout(3).get_partial_shape()[1].get_length();
     const bool use_short_sequence_block = info.arch == cldnn::gpu_arch::xe2 && !use_discrete_slm(params) && sequence_size <= xe2_short_sequence_limit;
@@ -86,6 +87,7 @@ protected:
         const size_t discrete_target = get_discrete_head_dim_target(params);
         const size_t head_dim_block =
             selective_ssm_jit::get_head_dim_block(head_dim, state_size, subgroup_size, params.get_device_info(), Kind, private_values_budget, discrete_target);
+        OPENVINO_ASSERT(subgroup_size != 0, "SelectiveSSM JIT kernel requires a non-zero subgroup size");
 
         jit.make("SSM_SEQUENCE_SIZE", x_shape[1].get_length());
         jit.make("SSM_NUM_HEADS", x_shape[2].get_length());
@@ -94,7 +96,8 @@ protected:
         jit.make("SSM_STATE_SIZE", state_size);
         jit.make("SSM_SUBGROUP_SIZE", subgroup_size);
         jit.make("SSM_HEAD_DIM_BLOCK", head_dim_block);
-        jit.make("SSM_STATE_ITERATIONS", cldnn::ceil_div(state_size, subgroup_size));
+        // get_subgroup_size() returns 0 for unsupported devices; the clamp only keeps the divisor defined.
+        jit.make("SSM_STATE_ITERATIONS", cldnn::ceil_div(state_size, std::max<size_t>(subgroup_size, 1)));
         jit.make("SSM_PAGED", false);
         jit.make("SSM_JIT_PRECOMPUTE_DA", false);
         jit.make("SSM_JIT_USE_SLM", Kind == selective_ssm_jit::device_kind::discrete && use_discrete_slm(params));
@@ -104,14 +107,17 @@ protected:
     [[nodiscard]] Arguments get_arguments_desc(const RuntimeParams& params) const override {
         OPENVINO_ASSERT(!params.is_dynamic(), "SelectiveSSM JIT kernel requires static shapes");
         Arguments args;
-        for (uint32_t i = 0; i < params.input_layouts.size(); i++)
+        for (uint32_t i = 0; i < params.input_layouts.size(); i++) {
             args.push_back({ArgumentDescriptor::Types::INPUT, i});
-        for (uint32_t i = 0; i < params.output_layouts.size(); i++)
+        }
+        for (uint32_t i = 0; i < params.output_layouts.size(); i++) {
             args.push_back({ArgumentDescriptor::Types::OUTPUT, i});
+        }
         args.push_back({ArgumentDescriptor::Types::SCALAR, 0});
         if constexpr (Kind == selective_ssm_jit::device_kind::discrete) {
-            if (use_discrete_slm(params))
+            if (use_discrete_slm(params)) {
                 args.push_back({ArgumentDescriptor::Types::LOCAL_MEMORY_SIZE, 0});
+            }
         }
         return args;
     }
@@ -136,8 +142,10 @@ protected:
                                                                                 Kind,
                                                                                 private_values_budget,
                                                                                 discrete_target);
+            OPENVINO_ASSERT(head_dim_block != 0, "SelectiveSSM JIT kernel requires a non-zero head dimension block");
 
-            kd.params.workGroups.global = {cldnn::ceil_div(head_dim, head_dim_block) * subgroup_size, num_heads, batch};
+            // get_head_dim_block() returns 0 for unsupported configurations; the clamp only keeps the divisor defined.
+            kd.params.workGroups.global = {cldnn::ceil_div(head_dim, std::max<size_t>(head_dim_block, 1)) * subgroup_size, num_heads, batch};
             kd.params.workGroups.local = {subgroup_size, 1, 1};
             kd.params.scalars.clear();
             cldnn::scalar_desc sequence_desc;
@@ -146,8 +154,9 @@ protected:
             kd.params.scalars.push_back(sequence_desc);
             kd.params.local_memory_args.clear();
             if constexpr (Kind == selective_ssm_jit::device_kind::discrete) {
-                if (use_discrete_slm(params))
+                if (use_discrete_slm(params)) {
                     kd.params.local_memory_args = {head_dim_block * state_size * sizeof(float)};
+                }
             }
         }};
     }
@@ -160,8 +169,9 @@ public:
 protected:
     [[nodiscard]] Arguments get_arguments_desc(const RuntimeParams& params) const override {
         Arguments args;
-        if (params.is_dynamic())
+        if (params.is_dynamic()) {
             args.push_back({ArgumentDescriptor::Types::SHAPE_INFO, 0});
+        }
         for (uint32_t i = 0; i < params.input_layouts.size(); i++) {
             args.push_back({ArgumentDescriptor::Types::INPUT, i});
         }
@@ -218,8 +228,9 @@ public:
 protected:
     [[nodiscard]] Arguments get_arguments_desc(const RuntimeParams& params) const override {
         Arguments args;
-        if (params.is_dynamic())
+        if (params.is_dynamic()) {
             args.push_back({ArgumentDescriptor::Types::SHAPE_INFO, 0});
+        }
         for (uint32_t i = 0; i < params.input_layouts.size(); i++) {
             args.push_back({ArgumentDescriptor::Types::INPUT, i});
         }
@@ -270,7 +281,7 @@ public:
     Stage::Ptr selective_ssm_large_state = make_stage<SelectiveSSMLargeStateGenerator>();
 
     SelectiveSSMOptImpl() : PrimitiveImplOCL(SelectiveSSMOpt::get_type_info_static()) {}
-    SelectiveSSMOptImpl(const program_node&, const RuntimeParams& params) : SelectiveSSMOptImpl() {
+    SelectiveSSMOptImpl(const program_node& /*unused*/, const RuntimeParams& params) : SelectiveSSMOptImpl() {
         add_stage(selective_ssm, params);
         add_stage(selective_ssm_large_state, params);
     }
@@ -286,8 +297,9 @@ public:
         if (B_shape.is_static() && state_layout.is_static()) {
             const size_t state_size = B_shape[3].get_length();
             const size_t lws = selective_ssm_utils::get_lws(state_size, params.get_device_info());
-            if (selective_ssm_utils::requires_global_state(state_size, lws, params.get_device_info()))
+            if (selective_ssm_utils::requires_global_state(state_size, lws, params.get_device_info())) {
                 state_scratch_elements = std::max<size_t>(state_layout.count(), 1);
+            }
         }
 
         return {BufferDescriptor{state_scratch_elements, ov::element::f32}};
@@ -295,11 +307,12 @@ public:
 
     [[nodiscard]] std::vector<size_t> get_stages_execution_order(const RuntimeParams& params) const override {
         const auto& B_shape = params.get_input_layout(2).get_partial_shape();
-        if (!B_shape.is_static())
+        if (!B_shape.is_static()) {
             return {0};
+        }
         const size_t state_size = B_shape[3].get_length();
         const size_t lws = selective_ssm_utils::get_lws(state_size, params.get_device_info());
-        return {selective_ssm_utils::requires_global_state(state_size, lws, params.get_device_info()) ? 1ul : 0ul};
+        return {selective_ssm_utils::requires_global_state(state_size, lws, params.get_device_info()) ? 1UL : 0UL};
     }
 };
 
@@ -310,7 +323,7 @@ public:
     Stage::Ptr selective_ssm = make_stage<SelectiveSSMJitGenerator<selective_ssm_jit::device_kind::integrated>>();
 
     SelectiveSSMJitIntegratedImpl() : PrimitiveImplOCL(SelectiveSSMJitIntegrated::get_type_info_static()) {}
-    SelectiveSSMJitIntegratedImpl(const program_node&, const RuntimeParams& params) : SelectiveSSMJitIntegratedImpl() {
+    SelectiveSSMJitIntegratedImpl(const program_node& /*unused*/, const RuntimeParams& params) : SelectiveSSMJitIntegratedImpl() {
         add_stage(selective_ssm, params);
     }
 
@@ -326,7 +339,7 @@ public:
     Stage::Ptr selective_ssm = make_stage<SelectiveSSMJitGenerator<selective_ssm_jit::device_kind::discrete>>();
 
     SelectiveSSMJitDiscreteImpl() : PrimitiveImplOCL(SelectiveSSMJitDiscrete::get_type_info_static()) {}
-    SelectiveSSMJitDiscreteImpl(const program_node&, const RuntimeParams& params) : SelectiveSSMJitDiscreteImpl() {
+    SelectiveSSMJitDiscreteImpl(const program_node& /*unused*/, const RuntimeParams& params) : SelectiveSSMJitDiscreteImpl() {
         add_stage(selective_ssm, params);
     }
 
@@ -339,20 +352,24 @@ public:
 
 bool validate_selective_ssm_jit(const program_node& node, const selective_ssm_jit::device_kind kind) {
     const auto& info = node.get_program().get_engine().get_device_info();
-    if (!selective_ssm_jit::matches_device_kind(info, kind))
+    if (!selective_ssm_jit::matches_device_kind(info, kind)) {
         return false;
+    }
 
     const size_t subgroup_size = selective_ssm_jit::get_subgroup_size(info, kind);
-    if (subgroup_size == 0)
+    if (subgroup_size == 0) {
         return false;
+    }
 
     for (size_t i = 0; i < node.get_dependencies().size(); i++) {
-        if (!is_plain_static_layout(node.get_input_layout(i)))
+        if (!is_plain_static_layout(node.get_input_layout(i))) {
             return false;
+        }
     }
     for (size_t i = 0; i < node.get_outputs_count(); i++) {
-        if (!is_plain_static_layout(node.get_output_layout(i)))
+        if (!is_plain_static_layout(node.get_output_layout(i))) {
             return false;
+        }
     }
 
     const auto& A_shape = node.get_input_layout(0).get_partial_shape();

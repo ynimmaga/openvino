@@ -48,14 +48,15 @@ std::vector<cl::Event> get_cl_events(const std::vector<event::ptr>& events) {
 }
 }  // namespace cldnn::ocl::utils
 
-void CL_CALLBACK ocl_event::ocl_event_completion_callback(cl_event, cl_int, void* me) {
+void CL_CALLBACK ocl_event::ocl_event_completion_callback(cl_event /*unused*/, cl_int /*unused*/, void* me) {
     reinterpret_cast<ocl_event*>(me)->_set = true;
     reinterpret_cast<ocl_event*>(me)->call_handlers();
 }
 
 void ocl_event::set_ocl_callback() {
-    if (_callback_set)
+    if (_callback_set) {
         return;
+    }
 
     if (_event.get() != nullptr) {
         _event.setCallback(CL_COMPLETE, ocl_event_completion_callback, this);
@@ -88,7 +89,7 @@ bool ocl_event::is_set_impl() {
     return true;
 }
 
-bool ocl_event::add_event_handler_impl(event_handler, void*) {
+bool ocl_event::add_event_handler_impl(event_handler /*unused*/, void* /*unused*/) {
     set_ocl_callback();
     return true;
 }
@@ -100,8 +101,9 @@ static const std::vector<profiling_period_ocl_start_stop> profiling_periods{
 };
 
 bool ocl_event::get_profiling_info_impl(std::list<instrumentation::profiling_interval>& info) {
-    if (!is_event_profiled(_event))
+    if (!is_event_profiled(_event)) {
         return true;
+    }
 
     for (const auto& period : profiling_periods) {
         cl_ulong start;
@@ -161,8 +163,9 @@ bool ocl_events::get_profiling_info_impl(std::list<instrumentation::profiling_in
             continue;
         }
 
-        if (!is_event_profiled(be->_event))
+        if (!is_event_profiled(be->_event)) {
             continue;
+        }
 
         for (const auto& period : profiling_periods) {
             cl_ulong ev_start;
@@ -231,8 +234,9 @@ bool ocl_events::get_profiling_info_impl(std::list<instrumentation::profiling_in
         unsigned long long min_start = durations.front().first;
         unsigned long long sum = 0;
         for (auto& duration : durations) {
-            if (duration.first < min_start)
+            if (duration.first < min_start) {
                 min_start = duration.first;
+            }
             sum += (duration.second - duration.first);
         }
 

@@ -12,6 +12,7 @@
 #include "common/utils.hpp"
 #include "common_test_utils/subgraph_builders/conv_pool_relu.hpp"
 #include "intel_npu/npu_private_properties.hpp"
+#include "openvino/opsets/opset6.hpp"
 #include "openvino/runtime/make_tensor.hpp"
 #include "openvino/util/codec_xor.hpp"
 
@@ -20,6 +21,108 @@ namespace ov {
 namespace test {
 
 namespace behavior {
+
+inline constexpr std::string_view HostCompile_Interpreter = "HostCompile_Interpreter";
+
+inline std::shared_ptr<ov::Model> createCustomNetModel(bool dynamicBatch = false) {
+    const ov::Dimension batchDimension = dynamicBatch ? ov::Dimension(1, 10) : ov::Dimension(1);
+    const ov::PartialShape inputShape{batchDimension, 16, ov::Dimension(1, 1080), ov::Dimension(10, 1920)};
+    auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f16, inputShape);
+    input->set_friendly_name("Parameter_59");
+
+    auto make_conv_add = [](const ov::Output<ov::Node>& data,
+                            const std::string& convName,
+                            const std::string& addName,
+                            float weightValue,
+                            float biasValue) -> ov::Output<ov::Node> {
+        const std::vector<float> weightValues(16 * 16, weightValue);
+        const std::vector<float> biasValues(16, biasValue);
+
+        auto weights = ov::op::v0::Constant::create(ov::element::f16, ov::Shape{16, 16, 1, 1}, weightValues);
+        auto conv = std::make_shared<ov::op::v1::Convolution>(data,
+                                                              weights,
+                                                              ov::Strides{1, 1},
+                                                              ov::CoordinateDiff{0, 0},
+                                                              ov::CoordinateDiff{0, 0},
+                                                              ov::Strides{1, 1},
+                                                              ov::op::PadType::EXPLICIT);
+        conv->set_friendly_name(convName);
+
+        auto bias = ov::op::v0::Constant::create(ov::element::f16, ov::Shape{1, 16, 1, 1}, biasValues);
+        auto add = std::make_shared<ov::op::v1::Add>(conv, bias);
+        add->set_friendly_name(addName);
+        return add;
+    };
+
+    auto x = make_conv_add(input, "Convolution_61", "Add_63", 0.01f, 0.001f);
+    x = make_conv_add(x, "Convolution_65", "Add_67", 0.011f, 0.001f);
+
+    auto relu68 = std::make_shared<ov::op::v0::Relu>(x);
+    relu68->set_friendly_name("Relu_68");
+    x = relu68;
+
+    x = make_conv_add(x, "Convolution_70", "Add_72", 0.012f, 0.001f);
+    auto relu73 = std::make_shared<ov::op::v0::Relu>(x);
+    relu73->set_friendly_name("Relu_73");
+    x = relu73;
+
+    x = make_conv_add(x, "Convolution_75", "Add_77", 0.013f, 0.001f);
+    auto relu78 = std::make_shared<ov::op::v0::Relu>(x);
+    relu78->set_friendly_name("Relu_78");
+    x = relu78;
+
+    x = make_conv_add(x, "Convolution_82", "Add_84", 0.014f, 0.001f);
+    auto relu85 = std::make_shared<ov::op::v0::Relu>(x);
+    relu85->set_friendly_name("Relu_85");
+    x = relu85;
+
+    x = make_conv_add(x, "Convolution_87", "Add_89", 0.015f, 0.001f);
+    auto relu90 = std::make_shared<ov::op::v0::Relu>(x);
+    relu90->set_friendly_name("Relu_90");
+    x = relu90;
+
+    x = make_conv_add(x, "Convolution_92", "Add_94", 0.016f, 0.001f);
+    auto relu95 = std::make_shared<ov::op::v0::Relu>(x);
+    relu95->set_friendly_name("Relu_95");
+    x = relu95;
+
+    auto multiplyScale = ov::op::v0::Constant::create(ov::element::f16, ov::Shape{1, 16, 1, 1}, {0.5f});
+    auto multiply97 = std::make_shared<ov::op::v1::Multiply>(x, multiplyScale);
+    multiply97->set_friendly_name("Multiply_97");
+
+    auto add98 = std::make_shared<ov::op::v1::Add>(multiply97, multiply97);
+    add98->set_friendly_name("Add_98");
+
+    x = make_conv_add(add98, "Convolution_100", "Add_102", 0.017f, 0.001f);
+
+    auto result = std::make_shared<ov::op::v0::Result>(x);
+    result->set_friendly_name("Result_104");
+
+    auto model = std::make_shared<ov::Model>(ov::ResultVector{result}, ov::ParameterVector{input}, "CustomNet");
+
+    // making input and output to be NHWC
+    auto preProc = ov::preprocess::PrePostProcessor(model);
+    preProc.input(0).tensor().set_layout("NHWC");
+    preProc.input(0).model().set_layout("NCHW");
+    preProc.output(0).tensor().set_layout("NHWC");
+    preProc.output(0).model().set_layout("NCHW");
+
+    model = preProc.build();
+
+    return model;
+}
+
+// The tensors of the model intentionally have no names: the plugin batching must not depend on them
+inline std::shared_ptr<ov::Model> createPluginBatchedModel(const ov::Dimension& batch) {
+    auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::PartialShape{batch, 2, 2, 2});
+    input->set_friendly_name("tensor_input");
+    input->set_layout("N...");
+    auto bias = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{1, 2, 2, 2}, {1.f});
+    auto add = std::make_shared<ov::op::v1::Add>(input, bias);
+    auto result = std::make_shared<ov::op::v0::Result>(add);
+    result->set_friendly_name("tensor_output");
+    return std::make_shared<ov::Model>(ov::ResultVector{result}, ov::ParameterVector{input});
+}
 
 using OVCompiledGraphImportExportTestNPU = OVCompiledGraphImportExportTest;
 
@@ -89,6 +192,44 @@ TEST_P(OVCompiledGraphImportExportTestNPU, CheckSizeOfRawBlobIfMultipleOfPageSiz
     ASSERT_TRUE(size % 4096 == 0) << "Size of the blob should be multiple of 4096";
 }
 
+TEST_P(OVCompiledGraphImportExportTestNPU, NonELFBlobExportThrows) {
+    ov::Core core;
+    std::stringstream sstream;
+
+    auto rawBlobConfig = configuration;
+    rawBlobConfig.emplace(ov::intel_npu::export_raw_blob(true));
+    rawBlobConfig.emplace(ov::intel_npu::compiler_type(ov::intel_npu::CompilerType::PLUGIN));
+
+    {
+        // WS
+        std::stringstream modelIR, weights;
+        ov::pass::Serialize serialzePass(
+            modelIR,
+            weights);  // serialization needed to re-read the model with WeightlessCacheAttribute set
+        auto model = ov::test::utils::make_conv_pool_relu();
+        serialzePass.run_on_model(model);
+        const auto& weightsStr = weights.str();
+        ov::Tensor weightsTensor(ov::element::u8, ov::Shape{weightsStr.size()}, weightsStr.c_str());
+        model = core.read_model(modelIR.str(), weightsTensor);
+
+        rawBlobConfig.emplace(ov::enable_weightless(true));
+        OV_EXPECT_THROW(core.compile_model(model, target_device, rawBlobConfig).export_model(sstream),
+                        ov::Exception,
+                        testing::HasSubstr("Requested raw blob export, but the graph is not a weightful ELF one."));
+        rawBlobConfig.erase(ov::enable_weightless.name());
+    }
+
+    if (ov::intel_npu::Platform::standardize(ov::test::utils::getTestPlatform()) != ov::intel_npu::Platform::NPU3720) {
+        // HostCompile
+        auto model = createCustomNetModel();
+        rawBlobConfig.emplace(ov::intel_npu::compilation_mode(HostCompile_Interpreter));
+        OV_EXPECT_THROW(core.compile_model(model, target_device, rawBlobConfig).export_model(sstream),
+                        ov::Exception,
+                        testing::HasSubstr("Requested raw blob export, but the graph is not a weightful ELF one."));
+        rawBlobConfig.erase(ov::intel_npu::compilation_mode.name());
+    }
+}
+
 TEST_P(OVCompiledGraphImportExportTestNPU, CheckSizeOfExportedModelIfMultipleOfPageSize) {
     ov::Core core;
     std::stringstream sstream;
@@ -121,6 +262,49 @@ TEST_P(OVCompiledGraphImportExportTestNPU, SameBlobAfterImportExport) {
     ov::Tensor blob_tensor(ov::element::u8, ov::Shape{blob_str.size()}, blob_str.c_str());
     core.import_model(blob_tensor, target_device, configuration).export_model(test_blob_stream_2);
     ASSERT_EQ(blob_stream.str(), test_blob_stream_2.str());
+}
+
+TEST_P(OVCompiledGraphImportExportTestNPU, BatchHandledByPluginIsKeptAfterImportExport) {
+    ov::Core core;
+
+    try {
+        (void)core.get_property(target_device, ov::intel_npu::batch_mode);
+    } catch (...) {
+        GTEST_SKIP() << "The batch mode is not supported by the compiler";
+    }
+    configuration[ov::intel_npu::batch_mode.name()] = ov::intel_npu::BatchMode::PLUGIN;
+
+    // A static batch is stored in the blob as it is, while a dynamic one is stored as "-1". Both of them must be
+    // restored at import, which is checked through the shapes of the imported model.
+    // The tensors of the model intentionally have no names: the plugin batching must not depend on them.
+    for (const ov::Dimension& batch : {ov::Dimension(4), ov::Dimension(1, 10)}) {
+        SCOPED_TRACE("batch: " + batch.to_string());
+
+        auto model = createPluginBatchedModel(batch);
+
+        std::stringstream blob_stream;
+        ov::CompiledModel compiled_model, imported_model;
+        OV_ASSERT_NO_THROW(compiled_model = core.compile_model(model, target_device, configuration));
+        OV_ASSERT_NO_THROW(compiled_model.export_model(blob_stream));
+        OV_ASSERT_NO_THROW(imported_model = core.import_model(blob_stream, target_device, configuration));
+
+        // The blob keeps only "-1" for a dynamic batch, so its upper bound is not restored at import: both shapes must
+        // have a dynamic batch dimension, while the rest of the dimensions must be the same
+        const auto check_shapes = [&batch](const ov::PartialShape& expected, const ov::PartialShape& actual) {
+            if (batch.is_static()) {
+                ASSERT_EQ(expected, actual);
+                return;
+            }
+            ASSERT_EQ(expected.size(), actual.size());
+            ASSERT_TRUE(expected[0].is_dynamic());
+            ASSERT_TRUE(actual[0].is_dynamic());
+            for (size_t i = 1; i < expected.size(); ++i) {
+                ASSERT_EQ(expected[i], actual[i]);
+            }
+        };
+        check_shapes(compiled_model.input(0).get_partial_shape(), imported_model.input(0).get_partial_shape());
+        check_shapes(compiled_model.output(0).get_partial_shape(), imported_model.output(0).get_partial_shape());
+    }
 }
 
 TEST_P(OVCompiledGraphImportExportTestNPU, ImportingEncryptedBlobThrows) {

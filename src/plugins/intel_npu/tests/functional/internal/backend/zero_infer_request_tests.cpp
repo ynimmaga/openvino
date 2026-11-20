@@ -11,12 +11,14 @@
 #include "common_test_utils/ov_plugin_cache.hpp"
 #include "common_test_utils/ov_tensor_utils.hpp"
 #include "compiled_model.hpp"
+#include "compiler_impl.hpp"
 #include "driver_compiler_adapter.hpp"
 #include "graph.hpp"
 #include "intel_npu/common/compiler_adapter_factory.hpp"
 #include "intel_npu/common/device_helpers.hpp"
 #include "intel_npu/config/config.hpp"
 #include "intel_npu/utils/utils.hpp"
+#include "intel_npu/utils/vcl/vcl_api.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/less_eq.hpp"
 #include "openvino/op/non_zero.hpp"
@@ -25,7 +27,6 @@
 #include "openvino/runtime/make_tensor.hpp"
 #include "plugin_compiler_adapter.hpp"
 #include "shared_test_classes/base/ov_behavior_test_utils.hpp"
-#include "transformations.hpp"
 #include "zero_backend.hpp"
 #include "zero_infer_request.hpp"
 
@@ -94,7 +95,7 @@ protected:
     bool withResetInferRequest;
     uint32_t zeGraphNpuExtVersion;
     uint32_t zeMutableCommandListExtVersion;
-    std::unique_ptr<::intel_npu::FilteredConfig> npu_config;
+    std::unique_ptr<::intel_npu::Config> npu_config;
     std::shared_ptr<::intel_npu::ZeroInitStructsHolder> zeroInitStruct;
     std::shared_ptr<ov::Model> ov_model;
 
@@ -156,17 +157,11 @@ public:
         auto options = std::make_shared<::intel_npu::OptionsDesc>();
         options->add<::intel_npu::PLATFORM>();
         options->add<::intel_npu::COMPILER_TYPE>();
-        options->add<::intel_npu::BATCH_MODE>();
         options->add<::intel_npu::MODEL_SERIALIZER_VERSION>();
-        npu_config = std::make_unique<::intel_npu::FilteredConfig>(options);
-        ::intel_npu::Config::ConfigMap configMap;
-        npu_config->enable(::intel_npu::PLATFORM::key().data(), true);
-        npu_config->enable(::intel_npu::MODEL_SERIALIZER_VERSION::key().data(), true);
+        npu_config = std::make_unique<::intel_npu::Config>(options);
         for (const auto& [propertyName, propertyValue] : configuration) {
-            configMap[propertyName] = propertyValue.as<std::string>();
-            npu_config->enable(propertyName, true);
+            npu_config->update(propertyName, propertyValue.as<std::string>());
         }
-        npu_config->update(configMap);
 
         auto zeroInitMock = std::make_shared<::intel_npu::ZeroInitStructsMock>(
             ::intel_npu::test_constants::TARGET_ZE_DRIVER_NPU_EXT_VERSION,
@@ -213,51 +208,32 @@ TEST_P(ZeroInferRequestTests, BooleanSetTensorSetTensorsWork) {
                        ? std::dynamic_pointer_cast<::intel_npu::ICompilerAdapter>(
                              std::make_shared<::intel_npu::DriverCompilerAdapter>(zeroInitStruct))
                        : std::dynamic_pointer_cast<::intel_npu::ICompilerAdapter>(
-                             std::make_shared<::intel_npu::PluginCompilerAdapter>(zeroInitStruct));
+                             std::make_shared<::intel_npu::PluginCompilerAdapter>(
+                                 zeroInitStruct,
+                                 std::make_shared<::intel_npu::VCLCompilerImpl>(
+                                     ::intel_npu::VCLLoader::getInstance()->sharedFunctions())));
     } catch (...) {
         GTEST_SKIP() << "Couldn't load compiler library";
     }
 
     // WA for error `[NPU_VCL] Unsupported IR API version! Val: 48.0`
     if (compiler->is_option_supported(::intel_npu::MODEL_SERIALIZER_VERSION::key().data())) {
-        npu_config->update({{::intel_npu::MODEL_SERIALIZER_VERSION::key().data(),
-                             ::intel_npu::MODEL_SERIALIZER_VERSION::toString(
-                                 ov::intel_npu::ModelSerializerVersion::ALL_WEIGHTS_COPY)}});
-    } else {
-        npu_config->enable(::intel_npu::MODEL_SERIALIZER_VERSION::key().data(), false);
+        npu_config->update(
+            ::intel_npu::MODEL_SERIALIZER_VERSION::key().data(),
+            ::intel_npu::MODEL_SERIALIZER_VERSION::toString(ov::intel_npu::ModelSerializerVersion::ALL_WEIGHTS_COPY));
     }
 
-    // logic for batch
-    auto copy_model = ov_model;
-    std::optional<int64_t> batch = std::nullopt;
-    if (npu_config->has<::intel_npu::BATCH_MODE>() &&
-        npu_config->get<::intel_npu::BATCH_MODE>() == ov::intel_npu::BatchMode::PLUGIN) {
-        std::optional<ov::Dimension> originalBatch = std::nullopt;
-        auto [batchedModel, successfullyDebatched] = intel_npu::batch_helpers::handlePluginBatching(
-            ov_model,
-            *npu_config,
-            [&](ov::intel_npu::BatchMode mode) {
-                npu_config->update({{::intel_npu::BATCH_MODE::key().data(), ::intel_npu::BATCH_MODE::toString(mode)}});
-            },
-            originalBatch,
-            ::intel_npu::Logger::global());
-        OPENVINO_ASSERT(successfullyDebatched, "Couldn't debatch test model!");
-        batch = originalBatch.value().get_length();
-        copy_model = batchedModel;
-    }
+    auto graph = compiler->compile(ov_model, *npu_config, ::intel_npu::AdapterDescriptor{});
 
-    auto graph = compiler->compile(copy_model, *npu_config);
-    if (batch) {
-        graph->set_batch_size(batch.value());
-    }
-
+    ov::AnyMap unknownProperties = ov::AnyMap{};
     auto compiledModel = std::make_shared<intel_npu::CompiledModel>(
         ov_model,
         std::make_shared<ov::test::utils::MockPlugin>(),  // MockPlugin needed only to avoid throw for nullptr
         device,
         graph,
         *npu_config,
-        batch);
+        unknownProperties,
+        std::nullopt);
     OPENVINO_ASSERT(compiledModel->inputs()[0].get_element_type() == element_type);
     OPENVINO_ASSERT(compiledModel->inputs()[1].get_element_type() == element_type);
 
@@ -340,19 +316,10 @@ using namespace ov::test::behavior;
 
 const std::vector<ov::AnyMap> configs = {
     {{ov::intel_npu::compiler_type(ov::intel_npu::CompilerType::PLUGIN),
-      ov::intel_npu::batch_mode(ov::intel_npu::BatchMode::PLUGIN),
       // platform needed only for NPU_COMPILER_TYPE_PLUGIN
       ov::intel_npu::platform(ov::intel_npu::Platform::standardize(
           ov::test::utils::getTestsPlatformFromEnvironmentOr(ov::test::utils::DEVICE_NPU)))}},
-    {{ov::intel_npu::compiler_type(ov::intel_npu::CompilerType::PLUGIN),
-      ov::intel_npu::batch_mode(ov::intel_npu::BatchMode::COMPILER),
-      // platform needed only for NPU_COMPILER_TYPE_PLUGIN
-      ov::intel_npu::platform(ov::intel_npu::Platform::standardize(
-          ov::test::utils::getTestsPlatformFromEnvironmentOr(ov::test::utils::DEVICE_NPU)))}},
-    {{ov::intel_npu::compiler_type(ov::intel_npu::CompilerType::DRIVER),
-      ov::intel_npu::batch_mode(ov::intel_npu::BatchMode::PLUGIN)}},
-    {{ov::intel_npu::compiler_type(ov::intel_npu::CompilerType::DRIVER),
-      ov::intel_npu::batch_mode(ov::intel_npu::BatchMode::COMPILER)}}};
+    {{ov::intel_npu::compiler_type(ov::intel_npu::CompilerType::DRIVER)}}};
 
 const std::vector<ov::element::Type> specialTensorDataTypes = {ov::element::boolean};
 

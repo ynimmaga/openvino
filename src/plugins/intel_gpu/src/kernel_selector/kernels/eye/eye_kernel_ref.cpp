@@ -15,7 +15,7 @@ KernelsData EyeKernelRef::GetKernelsData(const Params& params) const {
         return {};
     }
     KernelData kernel_data = KernelData::Default<eye_params>(params);
-    const eye_params& new_params = dynamic_cast<eye_params&>(*kernel_data.params.get());
+    const eye_params& new_params = dynamic_cast<eye_params&>(*kernel_data.params);
     auto dispatch_data = SetDefault(new_params);
     auto entry_point = GetEntryPoint(kernelName, new_params.layerID, params);
     auto slice_specific_jit = GetJitConstants(new_params);
@@ -58,8 +58,9 @@ bool EyeKernelRef::Validate(const Params& p) const {
     }
 
     const eye_params& params = dynamic_cast<const eye_params&>(p);
-    if (params.inputs.empty())
+    if (params.inputs.empty()) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
@@ -70,7 +71,7 @@ JitConstants EyeKernelRef::GetJitConstants(const eye_params& params) const {
     return jit;
 }
 
-CommonDispatchData EyeKernelRef::SetDefault(const eye_params& params) const {
+CommonDispatchData EyeKernelRef::SetDefault(const eye_params& params) {
     CommonDispatchData dispatchData;
     dispatchData.gws = {params.outputs[0].Batch().v,
                         params.outputs[0].Feature().v,

@@ -57,7 +57,8 @@ enum class activation_func {
     gelu_tanh,                 // x⋅0.5⋅(1+tanh[sqrt(2/pi)*val(1 + 0.044715⋅val^2)])
     round_half_to_even,        // round halfs to the nearest even integer
     round_half_away_from_zero, // round the number so it's further away from zero
-    erfinv                     // inverse Gauss error function (erfinv)
+    erfinv,                    // inverse Gauss error function (erfinv)
+    swoosh                     // softplus(val - a) - 0.08 * val - b
 };
 
 /// @brief activation additional params
@@ -79,9 +80,7 @@ struct activation_additional_params {
 struct activation : public primitive_base<activation> {
     CLDNN_DECLARE_PRIMITIVE(activation)
 
-    activation() : primitive_base("", {}),
-                   activation_function(activation_func::none),
-                   additional_params({0.f, 0.f}) {}
+    activation() : primitive_base("", {}), activation_function(activation_func::none), additional_params({0.F, 0.F}) {}
 
     /// @brief Constructs Relu primitive.
     /// @param id This primitive id.
@@ -91,7 +90,7 @@ struct activation : public primitive_base<activation> {
     activation(const primitive_id& id,
                const input_info& input,
                activation_func activation_function,
-               activation_additional_params additional_params = {0.f, 0.f})
+               activation_additional_params additional_params = {0.F, 0.F})
         : primitive_base(id, {input}),
           activation_function(activation_function),
           additional_params(additional_params),
@@ -133,8 +132,9 @@ struct activation : public primitive_base<activation> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const activation>(rhs);
 
@@ -163,8 +163,9 @@ protected:
         auto ret = std::map<size_t, const input_info*>{};
         auto idx = input.size();
 
-        if (additional_params_input.is_valid())
+        if (additional_params_input.is_valid()) {
             ret[idx++] = &additional_params_input;
+        }
 
         return ret;
     }

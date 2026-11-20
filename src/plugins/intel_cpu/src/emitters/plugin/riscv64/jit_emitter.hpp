@@ -38,13 +38,13 @@ inline void set_vector_length(ov::intel_cpu::riscv64::jit_generator_t* h,
     // - `vsetivli` for small compile-time AVL values encoded directly in the instruction
     // - `vsetvli` for runtime AVL values, or constants that do not fit that immediate field
     if (avl != nullptr) {
-        h->vsetvli(Xbyak_riscv::zero, *avl, sew, lmul);
+        h->vsetvli(Xbyak_riscv::zero, *avl, sew, lmul, Xbyak_riscv::VTA::tu, Xbyak_riscv::VMA::mu);
         return;
     }
 
     OV_CPU_JIT_EMITTER_ASSERT(vector_length > 0, "set_vector_length requires either vector_length or avl register");
     if (vector_length <= 31) {
-        h->vsetivli(Xbyak_riscv::zero, vector_length, sew, lmul);
+        h->vsetivli(Xbyak_riscv::zero, vector_length, sew, lmul, Xbyak_riscv::VTA::tu, Xbyak_riscv::VMA::mu);
         return;
     }
 
@@ -53,7 +53,7 @@ inline void set_vector_length(ov::intel_cpu::riscv64::jit_generator_t* h,
     OV_CPU_JIT_EMITTER_ASSERT(!aux_gpr_idxs.empty(), "Large vector length requires an auxiliary GPR register");
     const auto vector_length_reg = Xbyak_riscv::Reg(static_cast<int>(aux_gpr_idxs.back()));
     h->uni_li(vector_length_reg, vector_length);
-    h->vsetvli(Xbyak_riscv::zero, vector_length_reg, sew, lmul);
+    h->vsetvli(Xbyak_riscv::zero, vector_length_reg, sew, lmul, Xbyak_riscv::VTA::tu, Xbyak_riscv::VMA::mu);
 }
 
 class jit_emitter : public ov::snippets::Emitter {
@@ -63,8 +63,9 @@ public:
                 ov::element::Type exec_prc = ov::element::f32,
                 emitter_in_out_map in_out_type = emitter_in_out_map::vec_to_vec);
 
-    // We have to define second "emit_code" to pass FP registers because
-    // the base class method doesn't support them for code emission
+    using ov::snippets::Emitter::emit_code;
+
+    // The base method does not support FP registers for code emission.
     virtual void emit_code(const std::vector<size_t>& in_idxs,
                            const std::vector<size_t>& out_idxs,
                            const std::vector<size_t>& pool_vec_idxs,
@@ -132,7 +133,7 @@ protected:
     void emit_code_impl(const std::vector<size_t>& in_idxs,
                         const std::vector<size_t>& out_idxs,
                         const std::vector<size_t>& pool_vec_idxs,
-                        const std::vector<size_t>& pool_gpr_idxs) const override {
+                        const std::vector<size_t>& pool_gpr_idxs) const override final {
         emit_code_impl(in_idxs, out_idxs, pool_vec_idxs, pool_gpr_idxs, {});
     }
 

@@ -81,7 +81,7 @@ GemmKernelBase::DispatchData GemmKernelMMADint8::SetDefault(const gemm_params& p
     return dispatchData;
 }
 
-GemmKernelMMADint8::GemmTuningData GemmKernelMMADint8::InitGemmTuningData(const gemm_params& params) const {
+GemmKernelMMADint8::GemmTuningData GemmKernelMMADint8::InitGemmTuningData(const gemm_params& params) {
     GemmTuningData tuning_data;
 
     tuning_data.size_m = params.outputs[0].Y().v;
@@ -91,24 +91,24 @@ GemmKernelMMADint8::GemmTuningData GemmKernelMMADint8::InitGemmTuningData(const 
     return tuning_data;
 }
 
-inline size_t GemmKernelMMADint8::GetMmadOperationsNumber(const GemmTuningData& tuning_data) const {
+inline size_t GemmKernelMMADint8::GetMmadOperationsNumber(const GemmTuningData& tuning_data) {
     return tuning_data.size_m * tuning_data.size_n * tuning_data.size_k;
 }
 
-bool GemmKernelMMADint8::HasLeftovers(const GemmTuningData& tuning_data, int tile_size) const {
+bool GemmKernelMMADint8::HasLeftovers(const GemmTuningData& tuning_data, int tile_size) {
     if (tile_size == 32) {
-        return ((tuning_data.size_m % 32) != 0u) || ((tuning_data.size_n % 16) != 0u) || ((tuning_data.size_k % 64) != 0u);
+        return ((tuning_data.size_m % 32) != 0U) || ((tuning_data.size_n % 16) != 0U) || ((tuning_data.size_k % 64) != 0U);
     }
     if (tile_size == 16) {
-        return ((tuning_data.size_m % 16) != 0u) || ((tuning_data.size_n % 16) != 0u) || ((tuning_data.size_k % 64) != 0u);
+        return ((tuning_data.size_m % 16) != 0U) || ((tuning_data.size_n % 16) != 0U) || ((tuning_data.size_k % 64) != 0U);
     }
     if (tile_size == 8) {
-        return ((tuning_data.size_m % 8) != 0u) || ((tuning_data.size_n % 8) != 0u) || ((tuning_data.size_k % 32) != 0u);
+        return ((tuning_data.size_m % 8) != 0U) || ((tuning_data.size_n % 8) != 0U) || ((tuning_data.size_k % 32) != 0U);
     }
     return true;
 }
 
-GemmKernelMMADint8::GemmTuningData GemmKernelMMADint8::SetTuningParams(const gemm_params& params) const {
+GemmKernelMMADint8::GemmTuningData GemmKernelMMADint8::SetTuningParams(const gemm_params& params) {
     GemmTuningData tuning_data = InitGemmTuningData(params);
     auto mmad_operations_number = GetMmadOperationsNumber(tuning_data);
 
@@ -173,20 +173,23 @@ KernelsPriority GemmKernelMMADint8::GetKernelsPriority(const Params& params) con
 }
 
 bool GemmKernelMMADint8::Validate(const Params& params) const {
-    if (!Parent::Validate(params))
+    if (!Parent::Validate(params)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     const auto& gmm_params = static_cast<const gemm_params&>(params);
     auto input0_type = gmm_params.inputs[0].GetDType();
     auto input1_type = gmm_params.inputs[1].GetDType();
 
     if ((input0_type != Datatype::UINT8 && input0_type != Datatype::INT8) ||
-        (input1_type != Datatype::UINT8 && input1_type != Datatype::INT8))
+        (input1_type != Datatype::UINT8 && input1_type != Datatype::INT8)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     GemmTuningData tuning_data = SetTuningParams(gmm_params);
-    if (!IsSIMDSizeSupported(params.engineInfo, tuning_data.simd_size))
+    if (!IsSIMDSizeSupported(params.engineInfo, tuning_data.simd_size)) {
         DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     return true;
 }

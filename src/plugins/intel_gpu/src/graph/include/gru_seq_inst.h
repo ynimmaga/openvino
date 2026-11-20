@@ -43,13 +43,13 @@ public:
     static layout calc_output_layout(gru_seq_node const& node, kernel_impl_params const& impl_param);
     static std::string to_string(gru_seq_node const& node);
 
-public:
-    typed_primitive_inst(network& network, gru_seq_node const& node);
+    typed_primitive_inst(network& network, const gru_seq_node& node);
     lstm_weights_order offset_order() const { return get_typed_desc<gru_seq>()->offset_order; }
     float clip() const {
         float clip_val = get_typed_desc<gru_seq>()->clip;
-        if (clip_val < 0)
+        if (clip_val < 0) {
             throw std::range_error("Clip value < 0");
+        }
         return clip_val;
     }
     uint32_t direction() const { return get_typed_desc<gru_seq>()->direction == ov::op::RecurrentSequenceDirection::FORWARD ? 0 : 1; }

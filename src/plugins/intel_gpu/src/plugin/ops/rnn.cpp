@@ -28,8 +28,9 @@ static cldnn::activation_func GetActivationFunc(std::string name) {
         {"relu", cldnn::activation_func::relu},
     };
     auto itr = name_mapping.find(name);
-    if (itr != name_mapping.end())
+    if (itr != name_mapping.end()) {
         return itr->second;
+    }
     return cldnn::activation_func::none;
 }
 
@@ -43,20 +44,23 @@ void GetLSTMActivationParams(const std::shared_ptr<T>& op,
     activation_params = {};
     auto op_activations = op->get_activations();
     if (!op_activations.empty()) {
-        if (op_activations.size() != 3)
+        if (op_activations.size() != 3) {
             OPENVINO_THROW("Wrong number of activations for LSTMCell op ", op->get_friendly_name());
+        }
         for (int i = 0; i < 3; i++) {
             auto af = GetActivationFunc(op_activations[i]);
-            if (af == cldnn::activation_func::none)
+            if (af == cldnn::activation_func::none) {
                 OPENVINO_THROW("Wrong or unsupported activation type ", op_activations[i], " for LSTMCell op ", op->get_friendly_name());
+            }
             activations[i] = af;
         }
     }
     auto op_a = op->get_activations_alpha();
     auto op_b = op->get_activations_beta();
     if (!op_a.empty()) {
-        if (op_a.size() != 3 || op_b.size() != 3)
+        if (op_a.size() != 3 || op_b.size() != 3) {
             OPENVINO_THROW("Wrong number of activation parameters for LSTMCell op ", op->get_friendly_name());
+        }
         for (int i = 0; i < 3; i++) {
             cldnn::activation_additional_params params = { op_a[i], op_b[i] };
             activation_params.push_back(cldnn::activation_additional_params(params));
@@ -76,8 +80,9 @@ void GetGRUActivationParams(const std::shared_ptr<T>& op,
         OPENVINO_ASSERT(op_activations.size() == 2, "Wrong number of activations for GRUSeq op ", op->get_friendly_name());
         for (int i = 0; i < 2; i++) {
             auto af = GetActivationFunc(op_activations[i]);
-            if (af == cldnn::activation_func::none)
+            if (af == cldnn::activation_func::none) {
                 OPENVINO_THROW("Wrong or unsupported activation type ", op_activations[i], " for GRUSeq op ", op->get_friendly_name());
+            }
             activations[i] = af;
         }
     }
@@ -92,6 +97,15 @@ void GetGRUActivationParams(const std::shared_ptr<T>& op,
     }
 }
 
+static float NormalizeRNNClip(float clip, const std::string& layer_name) {
+    const auto clip_mode = ov::op::util::classify_rnn_clip(clip);
+    if (clip_mode == ov::op::util::RNNClipMode::INVALID) {
+        GPU_DEBUG_LOG << "[" << layer_name << "] Ignoring invalid RNN clip value " << clip
+                      << "; using no clipping" << std::endl;
+    }
+    return clip_mode == ov::op::util::RNNClipMode::CLAMP ? clip : 0.0F;
+}
+
 static void CreateGRUSequenceOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v5::GRUSequence>& op) {
     validate_inputs_count(op, {6});
     std::string layerName = layer_type_name_ID(op);
@@ -100,10 +114,10 @@ static void CreateGRUSequenceOp(ProgramBuilder& p, const std::shared_ptr<ov::op:
     std::vector<cldnn::activation_func> activations;
     std::vector<cldnn::activation_additional_params> activation_params;
     GetGRUActivationParams(op, activations, activation_params);
-    float clip = op->get_clip();
-    if (op->get_input_shape(2).size() != 1 || op->get_input_shape(3).size() != 3 \
-            || op->get_input_shape(4).size() != 3 || op->get_input_shape(5).size() != 2)
-            OPENVINO_THROW("Wrong input shapes for GRUSequence op ", op->get_friendly_name());
+    const float clip = NormalizeRNNClip(op->get_clip(), layerName);
+    if (op->get_input_shape(2).size() != 1 || op->get_input_shape(3).size() != 3 || op->get_input_shape(4).size() != 3 || op->get_input_shape(5).size() != 2) {
+        OPENVINO_THROW("Wrong input shapes for GRUSequence op ", op->get_friendly_name());
+    }
     auto direction = op->get_direction();
 
     OPENVINO_ASSERT(p.use_new_shape_infer());
@@ -121,7 +135,7 @@ static void CreateLSTMCellOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v4
     std::vector<cldnn::activation_func> activations;
     std::vector<cldnn::activation_additional_params> activation_params;
     GetLSTMActivationParams(op, activations, activation_params);
-    float clip = op->get_clip();
+    const float clip = NormalizeRNNClip(op->get_clip(), layerName);
     OPENVINO_ASSERT(!inputs[5].pid.empty());
     OPENVINO_ASSERT(p.use_new_shape_infer());
     p.add_primitive(*op, cldnn::lstm_cell(layerName, inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], cldnn::input_info(),
@@ -136,7 +150,7 @@ static void CreateLSTMSequenceOp(ProgramBuilder& p, const std::shared_ptr<ov::op
     std::vector<cldnn::activation_func> activations;
     std::vector<cldnn::activation_additional_params> activation_params;
     GetLSTMActivationParams(op, activations, activation_params);
-    const float clip = op->get_clip();
+    const float clip = NormalizeRNNClip(op->get_clip(), layerName);
     OPENVINO_ASSERT(op->get_input_shape(2).size() == 3 && op->get_input_shape(3).size() == 1 && op->get_input_shape(4).size() == 3 &&
         op->get_input_shape(5).size() == 3 && op->get_input_shape(6).size() == 2, "Wrong input shapes for LSTMSequence op ", op->get_friendly_name());
     auto direction = op->get_direction();

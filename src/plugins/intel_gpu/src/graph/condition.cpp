@@ -76,7 +76,7 @@ layout condition_inst::calc_output_layout(condition_node const& /* node */, kern
 template <class T>
 static bool convert_data(memory::ptr mem, stream& stream) {
     mem_lock<T, mem_lock_type::read> lock_data{mem, stream};
-    return (static_cast<float>(*lock_data.data()) != 0.f);
+    return (static_cast<float>(*lock_data.data()) != 0.F);
 }
 
 bool condition_inst::get_pred_from_memory(memory::ptr mem, stream& stream) {
@@ -260,8 +260,9 @@ void condition_inst::postprocess_output_memory(network::ptr executed_net, cldnn:
         }
 
         _outputs[out_mem_idx] = mem_ptr;
-        if (mem_ptr)
+        if (mem_ptr) {
             GPU_DEBUG_LOG << "Inner net - Outputs[" << out_mem_idx << "]" << mem_ptr->get_layout().to_short_string() << std::endl;
+        }
     }
 }
 }  // namespace cldnn

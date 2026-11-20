@@ -58,8 +58,18 @@ F8_DTYPE_MAP = {
     torch.float8_e5m2: OVType.f8e5m2,
 }
 
+# numpy has no bf16 or f8 types, so their data is viewed as a numpy type of the same width.
+_NUMPY_VIEW_DTYPES = {
+    torch.bfloat16: (torch.float16, OVType.bf16),
+    **{dtype: (torch.uint8, ov_type) for dtype, ov_type in F8_DTYPE_MAP.items()},
+}
+
 
 def torch_tensor_to_ov_const(torch_t: torch.Tensor, shared_memory=True):
+    # Memory-free tracing placeholder: emit the original tensor and convert it to FP32 in the graph.
+    original = getattr(torch_t, "_openvino_orig_tensor", None)
+    if original is not None:
+        return ops.convert(torch_tensor_to_ov_const(original, shared_memory=shared_memory), OVType.f32)
     try:
         from torch._prims import FakeTensor
         if isinstance(torch_t, FakeTensor):
@@ -68,21 +78,17 @@ def torch_tensor_to_ov_const(torch_t: torch.Tensor, shared_memory=True):
     except ImportError:
         log.debug("Failed to import FakeTensor")
 
-    dtype = torch_t.dtype
+    if torch_t.dtype in _NUMPY_VIEW_DTYPES:
+        view_dtype, ov_type = _NUMPY_VIEW_DTYPES[torch_t.dtype]
+        narr = torch_t.contiguous().view(view_dtype).numpy(force=True)
+        tensor = Tensor(narr, torch_t.shape, ov_type)
+        # Constant(tensor) keeps a raw pointer to narr and does not own it.
+        # contiguous() and numpy(force=True) return temporaries for non-contiguous or non-CPU input.
+        shares_caller_memory = shared_memory and narr.ctypes.data == torch_t.data_ptr()
+        return op.Constant(tensor, shared_memory=shares_caller_memory)
+
     torch_t = torch_t.contiguous()
-    if dtype == torch.bfloat16:
-        # reinterpret bfloat16 data as float16 to allow conversion to numpy
-        torch_t = torch_t.view(torch.float16)
-        narr = torch_t.numpy(force=True)
-        tensor = Tensor(narr, torch_t.shape, OVType.bf16)
-        ov_const = op.Constant(tensor, shared_memory=shared_memory)
-    elif dtype in F8_DTYPE_MAP:
-        # reinterpret f8 data as u8 to allow conversion to numpy
-        torch_t = torch_t.view(torch.uint8)
-        narr = torch_t.numpy(force=True)
-        tensor = Tensor(narr, torch_t.shape, F8_DTYPE_MAP[dtype])
-        ov_const = op.Constant(tensor, shared_memory=shared_memory)
-    elif torch_t.is_complex():
+    if torch_t.is_complex():
         narr = torch.view_as_real(torch_t).numpy(force=True)
         # we rely on frontend to mark the constant as complex internally
         ov_const = op.Constant(narr, shared_memory=shared_memory)
@@ -180,6 +186,29 @@ pt_to_ov_type_map = {
     "torch.quint8": OVType.u8,
     "torch.qint8": OVType.i8,
     "torch.qint32": OVType.i32,
+}
+
+# torch.dtype to the ScalarType index which TorchScript's ATen schemas take as an integer
+# input. This is the inverse of TORCH_TO_OV_TYPE in
+# src/frontends/pytorch/src/utils.cpp, which decodes the index back to an OpenVINO type;
+# keep the two in sync when PyTorch adds a dtype.
+pt_to_scalar_type_map = {
+    torch.uint8: 0,
+    torch.int8: 1,
+    torch.int16: 2,
+    torch.int32: 3,
+    torch.int64: 4,
+    torch.float16: 5,
+    torch.float32: 6,
+    torch.float64: 7,
+    torch.complex32: 8,
+    torch.complex64: 9,
+    torch.complex128: 10,
+    torch.bool: 11,
+    torch.qint8: 12,
+    torch.quint8: 13,
+    torch.qint32: 14,
+    torch.bfloat16: 15,
 }
 
 

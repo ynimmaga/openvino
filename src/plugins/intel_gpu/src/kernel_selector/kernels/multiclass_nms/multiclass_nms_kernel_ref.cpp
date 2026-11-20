@@ -30,7 +30,7 @@ ParamsKey MulticlassNmsKernelRef::GetSupportedKey() const {
     return k;
 }
 
-KernelsPriority MulticlassNmsKernelRef::GetKernelsPriority(const Params&) const {
+KernelsPriority MulticlassNmsKernelRef::GetKernelsPriority(const Params& /*unused*/) const {
     return DONT_USE_IF_HAVE_SOMETHING_ELSE;
 }
 
@@ -64,8 +64,7 @@ MulticlassNmsKernelRef::DispatchData SetDefault(const multiclass_nms_params& par
 }
 }  // namespace
 
-void MulticlassNmsKernelRef::SetKernelArguments(const multiclass_nms_params& params,
-                                                size_t idx, cldnn::arguments_desc& arguments) const {
+void MulticlassNmsKernelRef::SetKernelArguments(const multiclass_nms_params& params, size_t idx, cldnn::arguments_desc& arguments) {
     for (auto i = 0; i < (params.has_roisnum ? 3 : 2); ++i) {
         arguments.push_back({ArgumentDescriptor::Types::INPUT, (uint32_t)i});
     }
@@ -84,7 +83,7 @@ JitConstants MulticlassNmsKernelRef::GetJitConstants(const multiclass_nms_params
 
     auto real_num_classes = num_classes;
     if (params.background_class >= 0 && params.background_class < num_classes) {
-        real_num_classes = std::max<int64_t>(1ll, num_classes - 1);
+        real_num_classes = std::max<int64_t>(1LL, num_classes - 1);
     }
 
     int64_t max_output_boxes_per_class = 0;
@@ -95,8 +94,9 @@ JitConstants MulticlassNmsKernelRef::GetJitConstants(const multiclass_nms_params
     }
 
     auto max_output_boxes_per_batch = max_output_boxes_per_class * real_num_classes;
-    if (params.keep_top_k >= 0)
+    if (params.keep_top_k >= 0) {
         max_output_boxes_per_batch = std::min<int64_t>(max_output_boxes_per_batch, params.keep_top_k);
+    }
 
     jit.AddConstants({
         MakeJitConstant("SORT_RESULT_TYPE", static_cast<int>(params.sort_result_type)),

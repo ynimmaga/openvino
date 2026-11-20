@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,17 +33,20 @@ DeviceFeaturesKey FullyConnected_fb_io_b8_f8::get_required_device_features_key(c
 size_t FullyConnected_fb_io_b8_f8::GetBatchesPerWorkItem(const fully_connected_params& params) const {
     auto batch_size = params.outputs[0].Batch().v;
 
-    if (batch_size % 32 == 0)
+    if (batch_size % 32 == 0) {
         return std::min(batch_size, static_cast<size_t>(32U));
+    }
 
-    if (batch_size % 16 == 0)
+    if (batch_size % 16 == 0) {
         return std::min(batch_size, static_cast<size_t>(16U));
+    }
 
     return std::min(batch_size, static_cast<size_t>(8U));
 }
 
 FullyConnected_fb_io_b8_f8::DispatchData FullyConnected_fb_io_b8_f8::SetDefault(const fully_connected_params& arg,
-                                                                                int, int /*kernel_number*/) const {
+                                                                                int /*autoTuneIndex*/,
+                                                                                int /*kernel_number*/) const {
     auto dispatchData = FullyConnectedBlockKernelBase::SetDefault(arg);
 
     const auto& output = arg.outputs[0];
@@ -63,8 +66,9 @@ bool FullyConnected_fb_io_b8_f8::Validate(const Params& p) const {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
-    if (!IsSIMDSizeSupported(p.engineInfo, 8))
+    if (!IsSIMDSizeSupported(p.engineInfo, 8)) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     const auto& params = static_cast<const fully_connected_params&>(p);
 

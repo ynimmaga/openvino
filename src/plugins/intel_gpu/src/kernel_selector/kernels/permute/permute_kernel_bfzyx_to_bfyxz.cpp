@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -46,11 +46,13 @@ static inline bool IsMultipleDefaultTileSize(const size_t size) {
 
 static inline size_t GetTileSize(const permute_params& params) {
     // supports 4x4 or 8x8 tiling
-    if (!IsMultipleDefaultTileSize(params.inputs[0].X().v) || !IsMultipleDefaultTileSize(params.inputs[0].Z().v))
+    if (!IsMultipleDefaultTileSize(params.inputs[0].X().v) || !IsMultipleDefaultTileSize(params.inputs[0].Z().v)) {
         return MIN_TILE_SIZE;
+    }
 
-    if ((params.inputs[0].GetDType() == Datatype::INT64) || (params.outputs[0].GetDType() == Datatype::INT64))
+    if ((params.inputs[0].GetDType() == Datatype::INT64) || (params.outputs[0].GetDType() == Datatype::INT64)) {
         return MIN_TILE_SIZE;
+    }
 
     return DEFAULT_TILE_SIZE;
 }
@@ -68,7 +70,7 @@ JitConstants PermuteKernel_bfzyx_to_bfyxz::GetJitConstants(const permute_params&
     std::string x_remainder_cond = "true";
     std::string z_remainder_cond = "true";
 
-    if ((params.inputs[0].X().v % tile_size) != 0u) {
+    if ((params.inputs[0].X().v % tile_size) != 0U) {
         jit.AddConstant(MakeJitConstant("X_REMAINDER_ITEM", params.inputs[0].X().v / tile_size));
         jit.AddConstant(MakeJitConstant("X_REMAINDER_SIZE", params.inputs[0].X().v % tile_size));
         jit.AddConstant(MakeJitConstant("X_REMAINDER_SIZE_AS_VECTOR", CeilDiv(params.inputs[0].X().v % tile_size, vector_width)));
@@ -76,7 +78,7 @@ JitConstants PermuteKernel_bfzyx_to_bfyxz::GetJitConstants(const permute_params&
         x_remainder_cond += " && (x == X_REMAINDER_ITEM)";
         z_remainder_cond += " && (x < X_REMAINDER_ITEM)";
     }
-    if ((params.inputs[0].Z().v % tile_size) != 0u) {
+    if ((params.inputs[0].Z().v % tile_size) != 0U) {
         jit.AddConstant(MakeJitConstant("Z_REMAINDER_ITEM", params.inputs[0].Z().v / tile_size));
         jit.AddConstant(MakeJitConstant("Z_REMAINDER_SIZE", params.inputs[0].Z().v % tile_size));
         jit.AddConstant(MakeJitConstant("Z_REMAINDER_SIZE_AS_VECTOR", CeilDiv(params.inputs[0].Z().v % tile_size, vector_width)));
@@ -145,23 +147,27 @@ CommonDispatchData PermuteKernel_bfzyx_to_bfyxz::SetDefault(const permute_params
 }
 
 bool PermuteKernel_bfzyx_to_bfyxz::Validate(const Params& p) const {
-    if (!Parent::Validate(p)) DO_NOT_USE_THIS_KERNEL(p.layerID);
+    if (!Parent::Validate(p)) { DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     std::function<bool(const std::vector<uint16_t>&)> is_rotating_coords = [](const std::vector<uint16_t>& order) {
         const std::vector<uint16_t> expected_order {0, 1, 4, 2, 3};
         if (order.size() != expected_order.size()) return false;
-        for (size_t i{}; i < order.size(); ++i)
+        for (size_t i{}; i < order.size(); ++i) {
             if (order[i] != expected_order[i]) return false;
+        }
         return true;
     };
 
     const permute_params& params = static_cast<const permute_params&>(p);
 
-    if (!is_rotating_coords(params.order))
+    if (!is_rotating_coords(params.order)) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
-    if (params.outputs[0].PitchesDifferFromLogicalDims() || params.inputs[0].PitchesDifferFromLogicalDims())
+    if (params.outputs[0].PitchesDifferFromLogicalDims() || params.inputs[0].PitchesDifferFromLogicalDims()) {
         DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }

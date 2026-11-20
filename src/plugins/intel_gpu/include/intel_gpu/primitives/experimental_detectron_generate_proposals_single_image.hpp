@@ -59,8 +59,8 @@ struct experimental_detectron_generate_proposals_single_image
             post_nms_count{post_nms_count} {}
 
     input_info output_roi_scores;
-    float min_size = 0.0f;
-    float nms_threshold = 0.0f;
+    float min_size = 0.0F;
+    float nms_threshold = 0.0F;
     int64_t pre_nms_count = 0;
     int64_t post_nms_count = 0;
 
@@ -75,8 +75,9 @@ struct experimental_detectron_generate_proposals_single_image
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const experimental_detectron_generate_proposals_single_image>(rhs);
 
@@ -110,8 +111,9 @@ protected:
         auto ret = std::map<size_t, const input_info*>{};
         auto idx = input.size();
 
-        if (output_roi_scores.is_valid())
+        if (output_roi_scores.is_valid()) {
             ret[idx++] = &output_roi_scores;
+        }
 
         return ret;
     }

@@ -38,8 +38,8 @@ struct paged_gated_delta_net : public primitive_base<paged_gated_delta_net> {
     paged_gated_delta_net(const primitive_id& id,
                           const std::vector<input_info>& inputs,
                           bool use_qk_l2norm = false,
-                          float q_l2_norm_eps = 1e-6f,
-                          float k_l2_norm_eps = 1e-6f)
+                          float q_l2_norm_eps = 1e-6F,
+                          float k_l2_norm_eps = 1e-6F)
         : primitive_base(id, inputs),
           use_qk_l2norm(use_qk_l2norm),
           q_l2_norm_eps(q_l2_norm_eps),
@@ -60,8 +60,9 @@ struct paged_gated_delta_net : public primitive_base<paged_gated_delta_net> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const paged_gated_delta_net>(rhs);
         return k_head_size == rhs_casted.k_head_size && v_head_size == rhs_casted.v_head_size && k_heads_num == rhs_casted.k_heads_num &&
@@ -96,8 +97,8 @@ struct paged_gated_delta_net : public primitive_base<paged_gated_delta_net> {
     size_t k_heads_num = 0;
     size_t v_heads_num = 0;
     bool use_qk_l2norm = false;
-    float q_l2_norm_eps = 1e-6f;
-    float k_l2_norm_eps = 1e-6f;
+    float q_l2_norm_eps = 1e-6F;
+    float k_l2_norm_eps = 1e-6F;
 };
 
 }  // namespace cldnn

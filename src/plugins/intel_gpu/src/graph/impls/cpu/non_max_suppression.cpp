@@ -43,16 +43,16 @@ std::vector<result_indices> run_nms(
     auto less = [](const boxInfo& l, const boxInfo& r) {
         return l.score < r.score || ((l.score == r.score) && (l.idx > r.idx));
     };
-    float scale = 0.0f;
+    float scale = 0.0F;
     bool soft_nms = false;
-    if (soft_nms_sigma > 0.0f) {
-        scale = -0.5f / soft_nms_sigma;
+    if (soft_nms_sigma > 0.0F) {
+        scale = -0.5F / soft_nms_sigma;
         soft_nms = true;
     }
 
     auto coeff = [&](float iou) {
         const float weight = std::exp(scale * iou * iou);
-        return (iou <= iou_threshold || soft_nms) ? weight : 0.0f;
+        return (iou <= iou_threshold || soft_nms) ? weight : 0.0F;
     };
     std::vector<result_indices> result;
 
@@ -62,8 +62,9 @@ std::vector<result_indices> run_nms(
 
             std::priority_queue<boxInfo, std::vector<boxInfo>, decltype(less)> sorted_boxes(less);
             for (size_t bbi = 0; bbi < boxes[bi].size(); ++bbi) {
-                if (scores[bi][ci][bbi] > score_threshold)
+                if (scores[bi][ci][bbi] > score_threshold) {
                     sorted_boxes.emplace(boxInfo({scores[bi][ci][bbi], static_cast<int>(bbi), 0}));
+                }
             }
             fb.reserve(sorted_boxes.size());
 
@@ -81,8 +82,9 @@ std::vector<result_indices> run_nms(
                         box_is_selected = false;
                         break;
                     }
-                    if (currBox.score <= score_threshold)
+                    if (currBox.score <= score_threshold) {
                         break;
+                    }
                 }
                 currBox.suppress_begin_index = static_cast<int>(fb.size());
                 if (box_is_selected) {
@@ -110,34 +112,45 @@ std::vector<result_indices> run_nms(
     return result;
 }
 
+// Offsets of a 3D [b, f, y] tensor element computed from layout pitches, so both bfyx and byxf are handled
+struct bfy_offsets {
+    explicit bfy_offsets(const layout& l) : base(static_cast<int64_t>(l.get_linear_offset())) {
+        const auto pitches = l.get_pitches();
+        b = pitches[0];
+        f = pitches[1];
+        y = pitches[2];
+    }
+    size_t operator()(int64_t bi, int64_t fi, int64_t yi) const {
+        return static_cast<size_t>(base + bi * b + fi * f + yi * y);
+    }
+    int64_t base;
+    int64_t b, f, y;
+};
+
 template <typename T>
-vector2D<bounding_box> load_boxes_impl(stream& stream, memory::ptr mem, bool center_point) {
+vector2D<bounding_box> load_boxes_impl(stream& stream,
+                                       memory::ptr mem,
+                                       const layout& logical_layout,
+                                       bool center_point) {
     vector2D<bounding_box> result;
-    auto lay = mem->get_layout();
-    auto batch_size = lay.batch();
-    auto boxes_num = lay.feature();
+    auto batch_size = logical_layout.batch();
+    auto boxes_num = logical_layout.feature();
     result.resize(batch_size);
 
     mem_lock<T, mem_lock_type::read> boxes_lock(mem, stream);
     auto ptr = boxes_lock.data();
+    const bfy_offsets offset(logical_layout);
 
     for (int64_t bi = 0; bi < batch_size; ++bi) {
         result[bi].reserve(boxes_num);
         for (int64_t bxi = 0; bxi < boxes_num; ++bxi) {
-            int64_t offset = bi * boxes_num * 4 + bxi * 4;
+            const auto coord = [&](int64_t i) {
+                return static_cast<float>(ptr[offset(bi, bxi, i)]);
+            };
             if (center_point) {
-                result[bi].emplace_back(static_cast<float>(ptr[offset + 0]),
-                                        static_cast<float>(ptr[offset + 1]),
-                                        static_cast<float>(ptr[offset + 2]),
-                                        static_cast<float>(ptr[offset + 3]),
-                                        bounding_box::center_point_construct_tag());
+                result[bi].emplace_back(coord(0), coord(1), coord(2), coord(3), bounding_box::center_point_construct_tag());
             } else {
-                result[bi].emplace_back(
-                    static_cast<float>(ptr[offset + 1]),
-                    static_cast<float>(ptr[offset + 0]),
-                    static_cast<float>(ptr[offset + 3]),
-                    static_cast<float>(ptr[offset + 2]),
-                    bounding_box::two_corners_construct_tag());
+                result[bi].emplace_back(coord(1), coord(0), coord(3), coord(2), bounding_box::two_corners_construct_tag());
             }
         }
     }
@@ -145,36 +158,34 @@ vector2D<bounding_box> load_boxes_impl(stream& stream, memory::ptr mem, bool cen
     return result;
 }
 
-vector2D<bounding_box> load_boxes(stream& stream, memory::ptr mem, bool center_point) {
+vector2D<bounding_box> load_boxes(stream& stream, memory::ptr mem, const layout& logical_layout, bool center_point) {
     auto data_type = mem->get_layout().data_type;
     switch (data_type) {
     case cldnn::data_types::f16:
-        return load_boxes_impl<ov::element_type_traits<data_types::f16>::value_type>(stream, mem, center_point);
+        return load_boxes_impl<ov::element_type_traits<data_types::f16>::value_type>(stream, mem, logical_layout, center_point);
     case cldnn::data_types::f32:
-        return load_boxes_impl<ov::element_type_traits<data_types::f32>::value_type>(stream, mem, center_point);
+        return load_boxes_impl<ov::element_type_traits<data_types::f32>::value_type>(stream, mem, logical_layout, center_point);
     default:
         throw std::runtime_error("Non max suppression - unsupported boxes data type");
     }
 }
 
 template <typename T>
-vector3D<float> load_scores_impl(stream& stream, memory::ptr mem) {
-    auto lay = mem->get_layout();
-    auto batch_size = lay.batch();
-    auto classes_num = lay.feature();
-    auto boxes_num = lay.spatial(1);
-
+vector3D<float> load_scores_impl(stream& stream, memory::ptr mem, const layout& logical_layout) {
+    auto batch_size = logical_layout.batch();
+    auto classes_num = logical_layout.feature();
+    auto boxes_num = logical_layout.spatial(1);
     vector3D<float> result(batch_size, vector2D<float>(classes_num));
 
     mem_lock<T, mem_lock_type::read> lock(mem, stream);
     auto ptr = lock.data();
+    const bfy_offsets offset(logical_layout);
 
     for (int bi = 0; bi < batch_size; ++bi) {
         for (int ci = 0; ci < classes_num; ++ci) {
             result[bi][ci].reserve(boxes_num);
             for (int bxi = 0; bxi < boxes_num; ++bxi) {
-                auto offset = bi * boxes_num * classes_num + ci * boxes_num + bxi;
-                result[bi][ci].emplace_back(static_cast<float>(ptr[offset]));
+                result[bi][ci].emplace_back(static_cast<float>(ptr[offset(bi, ci, bxi)]));
             }
         }
     }
@@ -182,13 +193,13 @@ vector3D<float> load_scores_impl(stream& stream, memory::ptr mem) {
     return result;
 }
 
-vector3D<float> load_scores(stream& stream, memory::ptr mem) {
+vector3D<float> load_scores(stream& stream, memory::ptr mem, const layout& logical_layout) {
     auto data_type = mem->get_layout().data_type;
     switch (data_type) {
     case cldnn::data_types::f16:
-        return load_scores_impl<ov::element_type_traits<data_types::f16>::value_type>(stream, mem);
+        return load_scores_impl<ov::element_type_traits<data_types::f16>::value_type>(stream, mem, logical_layout);
     case cldnn::data_types::f32:
-        return load_scores_impl<ov::element_type_traits<data_types::f32>::value_type>(stream, mem);
+        return load_scores_impl<ov::element_type_traits<data_types::f32>::value_type>(stream, mem, logical_layout);
     default:
         throw std::runtime_error("Non max suppression - unsupported scores data type");
     }
@@ -329,13 +340,15 @@ void run(non_max_suppression_inst& instance) {
     auto prim = instance.get_typed_desc<non_max_suppression>();
     auto& stream = instance.get_network().get_stream();
 
-    auto boxes = load_boxes(stream, instance.input_boxes_mem(), prim->center_point_box);
-    auto scores = load_scores(stream, instance.input_scores_mem());
+    const auto& logical_boxes_layout = instance.get_impl_params()->get_input_layout(0);
+    const auto& logical_scores_layout = instance.get_impl_params()->get_input_layout(1);
+    auto boxes = load_boxes(stream, instance.input_boxes_mem(), logical_boxes_layout, prim->center_point_box);
+    auto scores = load_scores(stream, instance.input_scores_mem(), logical_scores_layout);
 
     int num_select_per_class = 0;
-    float iou_threshold = 1.f;
-    float score_threshold = 0.f;
-    float soft_nms_sigma = 0.f;
+    float iou_threshold = 1.F;
+    float score_threshold = 0.F;
+    float soft_nms_sigma = 0.F;
 
     if (instance.has_num_select_per_class()) {
         num_select_per_class = load_scalar<int>(stream, instance.num_select_per_class_mem());
@@ -375,8 +388,9 @@ void run(non_max_suppression_inst& instance) {
     }
 
     // New API for mutiple outputs support
-    if (instance.outputs_memory_count() == 3)
+    if (instance.outputs_memory_count() == 3) {
         store_third_output(stream, instance.output_memory_ptr(2), result);
+    }
 
     if (instance.outputs_memory_count() >= 2) {
         store_second_output(stream, instance.output_memory_ptr(1), result, output_size);
@@ -416,13 +430,13 @@ struct non_max_suppression_impl : typed_primitive_impl<non_max_suppression> {
             return stream.group_events(events);
         }
 
-        return make_output_event(stream, instance.is_output());
+        return make_output_event(stream, instance.needs_completion_event());
     }
 
-    static std::unique_ptr<primitive_impl> create(const non_max_suppression_node&, const kernel_impl_params&) {
+    static std::unique_ptr<primitive_impl> create(const non_max_suppression_node& /*unused*/, const kernel_impl_params& /*unused*/) {
         return std::make_unique<non_max_suppression_impl>();
     }
-    void init_kernels(const kernels_cache&, const kernel_impl_params&) override {}
+    void init_kernels(const kernels_cache& /*kernels_cache*/, const kernel_impl_params& /*params*/) override {}
 };
 namespace detail {
 
@@ -431,6 +445,9 @@ attach_non_max_suppression_impl::attach_non_max_suppression_impl() {
         std::make_tuple(data_types::i32, format::bfyx),
         std::make_tuple(data_types::f16, format::bfyx),
         std::make_tuple(data_types::f32, format::bfyx),
+        std::make_tuple(data_types::i32, format::byxf),
+        std::make_tuple(data_types::f16, format::byxf),
+        std::make_tuple(data_types::f32, format::byxf),
     });
 }
 
@@ -460,13 +477,13 @@ struct non_max_suppression_gather_impl : typed_primitive_impl<non_max_suppressio
             return stream.group_events(events);
         }
 
-        return make_output_event(stream, instance.is_output());
+        return make_output_event(stream, instance.needs_completion_event());
     }
 
-    static std::unique_ptr<primitive_impl> create(const non_max_suppression_gather_node&, const kernel_impl_params&) {
+    static std::unique_ptr<primitive_impl> create(const non_max_suppression_gather_node& /*unused*/, const kernel_impl_params& /*unused*/) {
         return std::make_unique<non_max_suppression_gather_impl>();
     }
-    void init_kernels(const kernels_cache&, const kernel_impl_params&) override {}
+    void init_kernels(const kernels_cache& /*kernels_cache*/, const kernel_impl_params& /*params*/) override {}
 };
 
 namespace detail {

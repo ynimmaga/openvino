@@ -13,10 +13,7 @@
 #include "openvino/op/unsqueeze.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -28,7 +25,7 @@ OutputVector translate_istft(const NodeContext& context) {
     auto input = context.get_input(0);
     auto complex_type_mark = as_type_ptr<ComplexTypeMark>(input.get_node_shared_ptr());
     if (complex_type_mark) {
-        input = complex_type_mark->input_value(0);
+        input = complex_type_mark->get_data();
     }
 
     auto n_fft = context.get_input(1);
@@ -100,7 +97,4 @@ OutputVector translate_istft(const NodeContext& context) {
         return {istft};
     }
 };
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

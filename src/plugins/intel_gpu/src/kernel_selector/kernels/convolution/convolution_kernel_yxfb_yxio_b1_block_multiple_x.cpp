@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -31,10 +31,12 @@ DeviceFeaturesKey ConvolutionKernel_yxfb_yxio_b1_block_multiple_x::get_required_
 
 namespace {
 size_t GetOfmPerWorkitem(size_t filter_ofm_num, size_t localWorkSize) {
-    if (filter_ofm_num % (localWorkSize * 4) == 0)
+    if (filter_ofm_num % (localWorkSize * 4) == 0) {
         return 4;
-    if (filter_ofm_num % (localWorkSize * 2) == 0)
+    }
+    if (filter_ofm_num % (localWorkSize * 2) == 0) {
         return 2;
+    }
     return 1;
 }
 }  // namespace
@@ -63,11 +65,11 @@ ConvolutionKernelBase::DispatchData ConvolutionKernel_yxfb_yxio_b1_block_multipl
     const size_t ofmPerWorkItem = GetOfmPerWorkitem(filter_ofm_num, local_work_size);
     if (ofmPerWorkItem == 4) {
         // We compute multiple spatial coordinates "x" in a single workitem that's why we must divide
-        dispatchData.gws[1] = static_cast<size_t>(std::ceil(static_cast<float>(dispatchData.gws[1]) / 4.0f));
+        dispatchData.gws[1] = static_cast<size_t>(std::ceil(static_cast<float>(dispatchData.gws[1]) / 4.0F));
     } else if (ofmPerWorkItem == 2) {
-        dispatchData.gws[1] = static_cast<size_t>(std::ceil(static_cast<float>(dispatchData.gws[1]) / 8.0f));
+        dispatchData.gws[1] = static_cast<size_t>(std::ceil(static_cast<float>(dispatchData.gws[1]) / 8.0F));
     } else {
-        dispatchData.gws[1] = static_cast<size_t>(std::ceil(static_cast<float>(dispatchData.gws[1]) / 8.0f));
+        dispatchData.gws[1] = static_cast<size_t>(std::ceil(static_cast<float>(dispatchData.gws[1]) / 8.0F));
     }
 
     dispatchData.gws[0] = filter_ofm_num * batch_size / ofmPerWorkItem;

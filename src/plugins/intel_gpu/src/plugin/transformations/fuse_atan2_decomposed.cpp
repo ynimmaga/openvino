@@ -25,10 +25,9 @@ FuseAtan2Decomposed::FuseAtan2Decomposed() {
     // Atan(div) where div is Divide(lhs, rhs) (frontend form) or
     // Multiply(lhs, Power(rhs, -1)) (post-ConvertDivide form, Multiply is
     // commutative so cover both input orderings).
-    auto exp_neg1_m = wrap_type<ov::op::v0::Constant>(
-        ov::op::util::constant_predicate<float>([](const std::vector<float>& v) {
-            return v.size() == 1 && v[0] == -1.0f;
-        }));
+    auto exp_neg1_m = wrap_type<ov::op::v0::Constant>(ov::op::util::constant_predicate<float>([](const std::vector<float>& v) {
+        return v.size() == 1 && v[0] == -1.0F;
+    }));
     auto power_m = wrap_type<ov::op::v1::Power>({any_input(), exp_neg1_m});
     auto divide_m = wrap_type<ov::op::v1::Divide>({any_input(), any_input()});
     auto mul_m = std::make_shared<ov::pass::pattern::op::Or>(ov::OutputVector{
@@ -51,21 +50,24 @@ FuseAtan2Decomposed::FuseAtan2Decomposed() {
         auto sel1 = pattern_map.at(sel1_m).get_node_shared_ptr();
         auto atan = pattern_map.at(atan_m).get_node_shared_ptr();
 
-        if (transformation_callback(sel3))
+        if (transformation_callback(sel3)) {
             return false;
+        }
 
         // Both branches of Sel1 must consume the Atan (the only structural
         // fingerprint robust to constant folding of the special-case chain).
         auto branch_uses_atan = [&](const std::shared_ptr<ov::Node>& branch) {
             for (size_t i = 0; i < branch->get_input_size(); ++i) {
-                if (branch->get_input_node_shared_ptr(i) == atan)
+                if (branch->get_input_node_shared_ptr(i) == atan) {
                     return true;
+                }
             }
             return false;
         };
         if (!branch_uses_atan(sel1->get_input_node_shared_ptr(1)) ||
-            !branch_uses_atan(sel1->get_input_node_shared_ptr(2)))
+            !branch_uses_atan(sel1->get_input_node_shared_ptr(2))) {
             return false;
+        }
 
         // Pattern guarantees atan->input(0) is either Divide or Multiply(_, Power(_, -1)).
         ov::Output<ov::Node> lhs, rhs;
@@ -82,8 +84,9 @@ FuseAtan2Decomposed::FuseAtan2Decomposed() {
         }
 
         const auto& y_et = lhs.get_element_type();
-        if (!y_et.is_real() || rhs.get_element_type() != y_et)
+        if (!y_et.is_real() || rhs.get_element_type() != y_et) {
             return false;
+        }
 
         auto atan2 = std::make_shared<ov::intel_gpu::op::Atan2>(lhs, rhs);
         atan2->set_friendly_name(sel3->get_friendly_name());

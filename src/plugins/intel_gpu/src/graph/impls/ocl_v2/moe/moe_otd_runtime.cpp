@@ -32,8 +32,9 @@ void OtdPerfCounters::dump() const {
 
 OtdPerfCounters* get_perf_counters() {
     static bool enabled = std::getenv("MOE_OTD_PERF_LOG") != nullptr;
-    if (!enabled)
+    if (!enabled) {
         return nullptr;
+    }
 
     static OtdPerfCounters counters;
     static bool registered = [] {
@@ -81,7 +82,7 @@ void maybe_transpose_scale_zp(const cldnn::MOECompressed::Config& config,
 
     const size_t elem_count = oc * group_count;
     if (is_scale) {
-        const size_t elem_size = static_cast<size_t>(cldnn::data_type_traits::size_of(layout.data_type));
+        const size_t elem_size = cldnn::data_type_traits::size_of(layout.data_type);
         OPENVINO_ASSERT(elem_size > 0, "Invalid scale element size for offset_pos=", offset_pos);
         OPENVINO_ASSERT(elem_count * elem_size == per_expert_size,
                         "Unexpected scale payload size for offset_pos=",
@@ -193,8 +194,9 @@ void fill_weights_memory(cldnn::stream& exec_stream,
     for (uint32_t expert : experts_list) {
         auto make_tensor_fill_plan = [&](size_t base_offset, cldnn::memory_ptr mem, size_t expert_no, size_t lru_expert_no, const char* tensor_name) {
             tensor_fill_plan plan;
-            if (!mem)
+            if (!mem) {
                 return plan;
+            }
             const auto total_bytes = mem->get_layout().bytes_count();
             OPENVINO_ASSERT(num_expert > 0, "Invalid expert count");
             plan.per_expert_size = total_bytes / num_expert;

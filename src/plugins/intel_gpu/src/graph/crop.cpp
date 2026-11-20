@@ -103,8 +103,7 @@ std::vector<layout> crop_inst::calc_output_layouts(const crop_node& /*node*/, co
         if (in_layout.is_dynamic()) {
             auto in_shape = in_layout.get<ShapeType>();
             auto r = (in_shape.rank().is_static())? in_shape.size() : 1;
-            return { layout{ShapeType::dynamic(r),
-                    in_layout.data_type, in_layout.format.adjust_to_rank(in_layout.format, r)} };
+            return {layout{ShapeType::dynamic(r), in_layout.data_type, format::adjust_to_rank(in_layout.format, r)}};
         }
 
         const auto& ref_in_sizes = desc->reference_input;
@@ -142,8 +141,9 @@ std::vector<layout> crop_inst::calc_output_layouts(const crop_node& /*node*/, co
         for (int32_t prev = 0; prev < desc->output_idx; prev++) {
             auto prev_crop_shape = output_layouts[prev].get_partial_shape().to_shape();
             for (size_t i = 0; i < dims; ++i) {
-                if (prev_crop_shape[i] != input_shape.to_shape()[i])
+                if (prev_crop_shape[i] != input_shape.to_shape()[i]) {
                     startOffset[i] += prev_crop_shape[i];
+                }
             }
         }
 
@@ -265,16 +265,19 @@ void crop_inst::on_execute() {
 }
 
 void crop_inst::update_output_memory() {
-    if (!can_be_optimized())
+    if (!can_be_optimized()) {
         return;
+    }
 
     build_deps();
 
-    if (input_memory_ptr() == nullptr)
+    if (input_memory_ptr() == nullptr) {
         return;
+    }
 
-    if (_outputs[0] && get_network().get_engine().is_the_same_buffer(output_memory(), input_memory()))
+    if (_outputs[0] && get_network().get_engine().is_the_same_buffer(output_memory(), input_memory())) {
         return;
+    }
 
     // Can_be_optimized nodes are allocating from memory_pool too. In this case,
     // we need release the legacy output memory from memory pool explicitly.

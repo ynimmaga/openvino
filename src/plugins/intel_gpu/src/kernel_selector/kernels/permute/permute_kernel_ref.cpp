@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2026 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,7 +33,7 @@ bool Process_F_First(const permute_params& params) {
     return (f_to_x(params.order) && is_fsv(in_layout) && SimpleLayout(out_layout));
 }
 
-static void GetOrderVector(std::string s, std::vector<std::string>* res) {
+void GetOrderVector(std::string s, std::vector<std::string>* res) {
     size_t pos_start = 0, pos_end;
     std::string token;
     while ((pos_end = s.find(",", pos_start)) != std::string::npos) {
@@ -45,8 +45,9 @@ static void GetOrderVector(std::string s, std::vector<std::string>* res) {
     res->push_back(s.substr(pos_start));
 }
 
-static std::string GetReorderedOutputOrder(const permute_params& params, const std::vector<std::string>& permute_out_idx,
-                                            const std::pair<size_t, size_t>& dim_change) {
+std::string GetReorderedOutputOrder(const permute_params& params,
+                                    const std::vector<std::string>& permute_out_idx,
+                                    const std::pair<size_t, size_t>& dim_change) {
     std::map<std::string, std::string> size_str_map = {
         {"b", "INPUT0_BATCH_NUM"},
         {"f", "INPUT0_FEATURE_NUM"},
@@ -152,14 +153,16 @@ CommonDispatchData PermuteKernelRef::SetDefault(const permute_params& params) co
 }
 
 bool PermuteKernelRef::Validate(const Params& p) const {
-    if (!Parent::Validate(p)) DO_NOT_USE_THIS_KERNEL(p.layerID);
+    if (!Parent::Validate(p)) { DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     const permute_params& params = static_cast<const permute_params&>(p);
 
     auto in_rank = params.inputs[0].GetDims().size();
     auto out_rank = params.outputs[0].GetDims().size();
-    if (in_rank != out_rank && (in_rank > 6 || out_rank > 6))
+    if (in_rank != out_rank && (in_rank > 6 || out_rank > 6)) {
        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
