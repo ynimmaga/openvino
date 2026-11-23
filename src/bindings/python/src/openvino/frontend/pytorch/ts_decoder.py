@@ -59,7 +59,6 @@ class TorchScriptPythonDecoder(TorchDecoderBase):
         default_float_type=None,
     ):
         super().__init__()
-        # torch dtype the model was built with, e.g. torch.bfloat16; see TorchDecoderBase.get_default_float_type.
         self._set_default_float_type(to_ov_float_type(default_float_type))
         self._shared_memory = shared_memory
         self._input_is_list = False
@@ -584,6 +583,9 @@ class TorchScriptPythonDecoder(TorchDecoderBase):
 
     def may_produce_alias(self, in_index: int, out_index: int) -> bool:
         try:
+            extension = self.get_op_extension()
+            if extension and isinstance(extension[1], ModuleExtension):
+                return False
             schema_text = self.get_schema()
             if schema_text != "(no schema)":
                 returns = _parse_schema(schema_text).returns

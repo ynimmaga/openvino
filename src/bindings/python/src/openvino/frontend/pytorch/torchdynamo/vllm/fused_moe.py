@@ -2,39 +2,42 @@
 # Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Replaces vLLM's opaque _C.cpu_fused_moe with standard aten ops that OV lowers to GatherMatmul.
+"""Replace vLLM's opaque _C.cpu_fused_moe with the tiled MoE block the CPU plugin lowers to GatherMatmul.
 
-The ops form the tiled MoE block (every expert on every token, then a routing-weighted sum) that the CPU plugin's
-ConvertTiledMoeBlockTo3GatherMatmuls matches. That pass turns it into three GatherMatmuls indexed by the [T, top_k]
-router ids, so each matmul sees T rows. If the block doesn't match, it runs as dense batched matmuls over all experts.
+If ConvertTiledMoeBlockTo3GatherMatmuls doesn't match, the block runs as dense batched matmuls over all experts.
 """
 
-# mypy: ignore-errors
 
 import logging
 import weakref
+from typing import TYPE_CHECKING, Any
 
 from .fx_utils import is_auto_functionalized, packing_permutation, replace_mutated_output
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
 _ACTIVATIONS = ("silu", "gelu", "gelu_tanh")
-_perm_cache = {}
+_perm_cache: "dict[tuple[int, int, str], torch.Tensor | None]" = {}
 # Unpacked weights per packed storage, shared by every compiled graph of the model.
-_unpacked_cache = weakref.WeakValueDictionary()
+_unpacked_cache: "weakref.WeakValueDictionary[tuple[int, tuple[int, ...], str], torch.Tensor]" = (
+    weakref.WeakValueDictionary())
 # Gate and up halves of an unpacked w13, keyed like _unpacked_cache plus the half.
-_half_cache = weakref.WeakValueDictionary()
+_half_cache: "weakref.WeakValueDictionary[tuple[int, tuple[int, ...], str, int], torch.Tensor]" = (
+    weakref.WeakValueDictionary())
 # Traced expert graphs per layer signature; every MoE layer of a model shares one.
-_trace_cache = {}
+_trace_cache: "dict[tuple[Any, ...], torch.fx.GraphModule]" = {}
 
 
-def clear_weight_caches():
-    """Drop the unpacked expert copies and halves: they are keyed by the packed address, which in-place reloads keep."""
+def clear_weight_caches() -> None:
+    """Drop the unpacked expert copies: their packed-address keys survive in-place reloads."""
     _unpacked_cache.clear()
     _half_cache.clear()
 
 
-def _unpack_permutation(rows, cols, isa):
+def _unpack_permutation(rows: int, cols: int, isa: str) -> "torch.Tensor | None":
     """Source index per packed position of a [rows, cols] expert weight; None if the pack isn't a permutation."""
     import torch
     import vllm._custom_ops as ops
@@ -45,7 +48,7 @@ def _unpack_permutation(rows, cols, isa):
     return _perm_cache[key]
 
 
-def unpack_expert_weight(packed, isa):
+def unpack_expert_weight(packed: "torch.Tensor", isa: str) -> "torch.Tensor | None":
     """Undo vLLM's cpu_prepack_moe_weight on a [experts, rows, cols] tensor."""
     import torch
     key = (packed.data_ptr(), tuple(packed.shape), isa)
@@ -63,7 +66,7 @@ def unpack_expert_weight(packed, isa):
     return plain
 
 
-def split_gate_up(packed, isa):
+def split_gate_up(packed: "torch.Tensor", isa: str) -> "list[torch.Tensor] | None":
     """Unpacked, contiguous (gate, up) halves of a packed [experts, 2 * inter, hidden] w13; None if not unpackable."""
     key = (packed.data_ptr(), tuple(packed.shape), isa)
     halves = [_half_cache.get(key + (i,)) for i in (0, 1)]
@@ -78,12 +81,11 @@ def split_gate_up(packed, isa):
     return halves
 
 
-def moe_tiled(tokens, w1, w3, w2, topk_weights, topk_ids, act):
-    """Compute MoE experts as a tiled block; same math as vLLM's cpu_fused_moe (w1 = gate, w3 = up).
+def moe_tiled(tokens: "torch.Tensor", w1: "torch.Tensor", w3: "torch.Tensor", w2: "torch.Tensor",
+              topk_weights: "torch.Tensor", topk_ids: "torch.Tensor", act: str) -> "torch.Tensor":
+    """Compute MoE experts as the tiled block ConvertTiledMoeBlockTo3GatherMatmuls matches (w1 = gate, w3 = up).
 
-    Shaped for ConvertTiledMoeBlockTo3GatherMatmuls: Tile -> Reshape -> gate/up MatMuls -> act * up -> down MatMul ->
-    Reshape, times ScatterElementsUpdate -> Transpose -> Reshape routing weights, ReduceSum over experts.
-    bmm and view on contiguous tensors keep -1 for the token dim in the trace (matmul and reshape would bake it in).
+    bmm and view keep -1 for the token dim in the trace, where matmul and reshape would bake it in.
     """
     import torch
     from torch.nn import functional
@@ -102,8 +104,8 @@ def moe_tiled(tokens, w1, w3, w2, topk_weights, topk_ids, act):
     return (down * routing).sum(0)
 
 
-def _constant(gm, node):
-    """The tensor behind a get_attr node, or None for anything else."""
+def _constant(gm: "torch.fx.GraphModule", node: "torch.fx.Node") -> "torch.Tensor | None":
+    """Return the tensor behind a get_attr node, or None."""
     if node.op != "get_attr":
         return None
     value = gm
@@ -112,13 +114,14 @@ def _constant(gm, node):
     return value
 
 
-def _fused_moe_op():
+def _fused_moe_op() -> "torch._ops.OpOverload":
     import torch
     return torch.ops._C.cpu_fused_moe.default
 
 
-def _trace_expert_graph(act, x_dtype, weights, w_dtype, top_ids_val):
-    """FX graph of moe_tiled for one layer signature, traced once and reused."""
+def _trace_expert_graph(act: str, x_dtype: "torch.dtype", weights: "list[torch.Tensor]", w_dtype: "torch.dtype",
+                        top_ids_val: "torch.Tensor") -> "torch.fx.GraphModule":
+    """Return the FX graph of moe_tiled for one layer signature, traced once."""
     import torch
     from torch._guards import tracing
     from torch._subclasses.fake_tensor import FakeTensorMode
@@ -129,7 +132,8 @@ def _trace_expert_graph(act, x_dtype, weights, w_dtype, top_ids_val):
     top_k, id_dtype = top_ids_val.shape[1], top_ids_val.dtype
     key = (act, x_dtype, tuple(w1.shape), tuple(w2.shape), w1.dtype, w_dtype, top_k, id_dtype)
     if key not in _trace_cache:
-        def body(tokens, w1, w3, w2, top_w, top_i):
+        def body(tokens: "torch.Tensor", w1: "torch.Tensor", w3: "torch.Tensor", w2: "torch.Tensor",
+                 top_w: "torch.Tensor", top_i: "torch.Tensor") -> "torch.Tensor":
             return moe_tiled(tokens, w1, w3, w2, top_w, top_i, act)
 
         # Fakes from a private static-shape mode, so dynamo's ShapeEnv gets no guards.
@@ -142,9 +146,8 @@ def _trace_expert_graph(act, x_dtype, weights, w_dtype, top_ids_val):
     return _trace_cache[key]
 
 
-def rewrite_cpu_fused_moe(gm) -> int:
+def rewrite_cpu_fused_moe(gm: "torch.fx.GraphModule") -> int:
     """Replace _C.cpu_fused_moe call sites with the tiled MoE formulation."""
-    import torch
     from torch.utils._python_dispatch import _disable_current_modes
 
     nodes = [n for n in gm.graph.nodes if is_auto_functionalized(n, _fused_moe_op)]
@@ -162,6 +165,8 @@ def rewrite_cpu_fused_moe(gm) -> int:
         if any(t is None for t in packed):
             logger.warning("fused_moe: expert weights are not graph constants; leaving vLLM's op")
             continue
+        assert packed[0] is not None
+        assert packed[1] is not None
         isa = kw.get("isa", "amx")
         # Unpack real weights outside dynamo's active fake/functional modes.
         with _disable_current_modes():

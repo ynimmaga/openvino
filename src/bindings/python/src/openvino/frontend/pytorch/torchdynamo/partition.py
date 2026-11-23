@@ -32,7 +32,6 @@ class PatternNode:
 
 class Partitioner:
     def __init__(self, options):
-        self._ov_options = options
         self.supported_ops = OperatorSupport(options)
 
     def fx_serialize(self, graph_module: GraphModule, *args, **kwargs):
@@ -140,16 +139,14 @@ class Partitioner:
         self.capture_gptq_patterns(graph_module)
         self.capture_nncf_patterns(graph_module)
 
-        # Optional: rewrites vLLM's attention HOP node into
-        # torch.ops.ov_ext.paged_attention.default. No-op on non-vLLM graphs.
-        # Not wrapped in try: on the vLLM path a failed rewrite must stop compilation
-        # (see vllm.maybe_rewrite_paged_attention); elsewhere it already returns 0.
+        # Rewrites vLLM attention into ov_ext.paged_attention; not wrapped in try, a failed rewrite must stop.
         from openvino.frontend.pytorch.torchdynamo import vllm as _vllm
-        _vllm.maybe_rewrite_paged_attention(graph_module, getattr(self, "_ov_options", None))
+        _vllm.maybe_rewrite_paged_attention(graph_module, options)
 
         partitioner = CapabilityBasedPartitioner(
             graph_module, self.supported_ops, allows_single_node_partition=allow_single_node_partition)
         partitions = partitioner.propose_partitions()
+        _vllm.keep_paged_attention_partitioned(graph_module, partitions, self.supported_ops, options)
         self.add_get_attr_inputs(partitions)
         fused_graph_module = partitioner.fuse_partitions(partitions)
         logger.debug(f"Graph module after partitioning {fused_graph_module}")

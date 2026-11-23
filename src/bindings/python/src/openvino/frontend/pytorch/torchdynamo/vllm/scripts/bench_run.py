@@ -2,16 +2,7 @@
 # Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# mypy: ignore-errors
-
-# flake8: noqa
-
-"""Manual benchmarking/smoke-test CLI: vLLM + OpenVINO backend vs vLLM eager.
-
-Ad-hoc perf and correctness checks against arbitrary models. Greedy decode
-only, so any output divergence is attributable to model.forward, not sampling.
-Reports output text (must match byte-for-byte) and steady-state decode tok/s;
-exits nonzero if the texts diverge.
+"""Benchmark vLLM's OpenVINO backend against eager: greedy text (must match) and steady-state decode tok/s.
 
 Usage:
   python -m openvino.frontend.pytorch.torchdynamo.vllm.scripts.bench_run \
@@ -24,39 +15,39 @@ import argparse
 import os
 import sys
 import time
+from typing import Any
 
 
-# Pre-init to CPU: this env may have both vllm and vllm-cpu installed, and
-# auto-detection can pick the wrong one.
 os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
 
-# Must precede the first vLLM import: vLLM reads this at module import, well
-# before the plugin entry point loads. See preset.set_pre_import_env.
-from openvino.frontend.pytorch.torchdynamo.vllm.preset import (  # noqa: E402
+# Must precede the first vLLM import, which reads these settings.
+from openvino.frontend.pytorch.torchdynamo.vllm.preset import (
     set_pre_import_env,
 )
 
 set_pre_import_env()
 
 
-def _select_cpu_platform():
+# This env may have both vllm and vllm-cpu installed, and auto-detection can pick the wrong one.
+def _select_cpu_platform() -> None:
     import vllm.platforms as _vp
     from vllm.platforms.cpu import CpuPlatform as _CpuPlatform
     _vp._current_platform = _CpuPlatform()
 
 
-def _generate(llm, prompt, params):
+def _generate(llm: Any, prompt: str, params: Any) -> Any:
     out = llm.generate([{"prompt": prompt}], params)
     return out[0].outputs[0]
 
 
-def _run(label, llm, prompt, max_new_tokens, skip_warmup_tokens):
+# Short/full measurement pairs tried before giving up on a non-positive steady-state time.
+_MEASURE_ATTEMPTS = 3
+
+
+def _run(label: str, llm: Any, prompt: str, max_new_tokens: int, skip_warmup_tokens: int) -> tuple[str, float]:
     from vllm import SamplingParams
 
-    # All runs use temperature=0 (do_sample=False) -> greedy argmax. No
-    # sampling code path is exercised in either backend.
-
-    # Warmup (compiles the model; not counted in the steady-state measurement).
+    # Greedy (temperature=0) throughout; the untimed warmup compiles the model.
     warm_params = SamplingParams(
         max_tokens=max_new_tokens,
         temperature=0.0,
@@ -64,29 +55,35 @@ def _run(label, llm, prompt, max_new_tokens, skip_warmup_tokens):
     )
     _generate(llm, prompt, warm_params)
 
-    # Short run captures fixed overhead + first few tokens (first decode step
-    # is often slower).
+    # Steady state = full run minus a short run of the first tokens; re-measure if noise leaves no positive time.
     short_params = SamplingParams(
         max_tokens=skip_warmup_tokens,
         temperature=0.0,
         ignore_eos=True,
     )
-    t0 = time.perf_counter()
-    _generate(llm, prompt, short_params)
-    t_short = time.perf_counter() - t0
-
-    # Full run.
     full_params = SamplingParams(
         max_tokens=max_new_tokens,
         temperature=0.0,
         ignore_eos=True,
     )
-    t0 = time.perf_counter()
-    out = _generate(llm, prompt, full_params)
-    t_full = time.perf_counter() - t0
+    for _ in range(_MEASURE_ATTEMPTS):
+        t0 = time.perf_counter()
+        _generate(llm, prompt, short_params)
+        t_short = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        out = _generate(llm, prompt, full_params)
+        t_full = time.perf_counter() - t0
+        if t_full > t_short:
+            break
+    else:
+        raise RuntimeError(
+            f"[{label}] the {max_new_tokens}-token run was not slower than the {skip_warmup_tokens}-token run "
+            f"in {_MEASURE_ATTEMPTS} attempts (last {t_full:.4f}s vs {t_short:.4f}s); increase --max-new-tokens"
+        )
 
     steady_tokens = max_new_tokens - skip_warmup_tokens
-    steady_time = max(t_full - t_short, 1e-9)
+    steady_time = t_full - t_short
     steady_tps = steady_tokens / steady_time
     print(
         f"[{label}] {max_new_tokens} tokens / {t_full:.2f}s = {max_new_tokens / t_full:.2f} tok/s  "
@@ -95,7 +92,7 @@ def _run(label, llm, prompt, max_new_tokens, skip_warmup_tokens):
     return out.text, steady_tps
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
@@ -147,8 +144,7 @@ def main():
         ),
     )
     args = parser.parse_args()
-    # The short run needs max_tokens >= 1 (vLLM rejects 0), and the steady
-    # window needs at least one token, so check before loading any engine.
+    # vLLM rejects max_tokens=0, and the steady window needs a token; check before loading an engine.
     if not 0 < args.skip_warmup_tokens < args.max_new_tokens:
         parser.error(
             f"need 0 < --skip-warmup-tokens < --max-new-tokens, got "
@@ -181,8 +177,7 @@ def main():
 
     if args.mode in ("openvino", "both"):
         print(f"[openvino] loading {args.model} ...")
-        # block_size=32 is a hard PA kernel constraint; custom_ops=["none"]
-        # stops vLLM expanding RMSNorm/SiLU into CUDA-only custom ops.
+        # OV PA requires block_size 32; custom_ops=["none"] keeps RMSNorm/SiLU as plain ops.
         llm = LLM(
             model=args.model,
             dtype=args.dtype,
@@ -212,6 +207,8 @@ def main():
             print("FAIL: outputs differ")
             print(f"  eager:    {eager_text!r}")
             print(f"  openvino: {ov_text!r}")
+        assert eager_tps is not None
+        assert ov_tps is not None
         speedup = ov_tps / eager_tps if eager_tps else float("inf")
         print(f"steady tok/s   eager={eager_tps:.2f}   openvino={ov_tps:.2f}   speedup={speedup:.2f}x")
         if eager_text != ov_text:

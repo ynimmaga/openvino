@@ -22,6 +22,11 @@ from openvino.frontend.pytorch.torchdynamo.backend_utils import (
     _is_cache_dir_in_config,
 )
 
+try:
+    from openvino.frontend.pytorch.torchdynamo.vllm import compile_hooks as _vh
+except ImportError:
+    _vh = None
+
 logger = logging.getLogger(__name__)
 
 _core = None
@@ -124,8 +129,8 @@ def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options
 
         default_float_type = None
         try:
-            from openvino.frontend.pytorch.torchdynamo.vllm import compile_hooks as _vh
-            default_float_type = _vh.decoder_default_float_type(options)
+            if _vh is not None:
+                default_float_type = _vh.decoder_default_float_type(options)
         except Exception as _ee:
             logger.debug("vllm.decoder_default_float_type skipped: %s", _ee)
         decoder = TorchFXPythonDecoder(gm, default_float_type=default_float_type)
@@ -134,11 +139,10 @@ def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options
 
         om = fe.convert(im)
 
-        # vLLM-specific compile hooks (PA Parameters, Concat ranks). No-op on
-        # graphs without the matching patterns.
+        # vLLM compile hooks; no-op on graphs without the matching patterns.
         try:
-            from openvino.frontend.pytorch.torchdynamo.vllm import compile_hooks as _vh
-            _vh.apply_post_convert(om, options)
+            if _vh is not None:
+                _vh.apply_post_convert(om, options)
         except Exception as _ee:
             logger.debug("vllm.apply_post_convert skipped: %s", _ee)
 
@@ -157,17 +161,8 @@ def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options
         torch.bool: Type.boolean
     }
 
-    # vLLM path bakes/rebuilds int inputs itself; returns False for
-    # non-vLLM graphs to fall through to the upstream loop below.
-    # Only ImportError is recoverable: apply_input_shapes removes Parameters
-    # from `om`, so any other failure must surface rather than mis-shape.
-    _shaped = False
-    try:
-        from openvino.frontend.pytorch.torchdynamo.vllm import compile_hooks as _vh
-    except ImportError as _ee:
-        logger.debug("vllm.apply_input_shapes skipped: %s", _ee)
-    else:
-        _shaped = _vh.apply_input_shapes(om, args, options, gm=gm)
+    # False for non-vLLM graphs. Not wrapped in try: it removes Parameters, so a failure must surface.
+    _shaped = _vh is not None and _vh.apply_input_shapes(om, args, options, gm)
 
     if not _shaped:
         for idx, input_data in enumerate(args):
@@ -186,11 +181,10 @@ def openvino_compile(gm: GraphModule, *args, model_hash_str: str = None, options
         if not _is_cache_dir_in_config(options):
             config["CACHE_DIR"] = cache_root
 
-    # vLLM-specific OV-config defaults (KV cache precision, FC quantization,
-    # narrow-float hint). `om` lets precisions derive from the model's dtype.
+    # vLLM OV-config defaults; `om` lets precisions derive from the model's dtype.
     try:
-        from openvino.frontend.pytorch.torchdynamo.vllm import compile_hooks as _vh
-        _vh.apply_post_config(config, device, options, om=om)
+        if _vh is not None:
+            _vh.apply_post_config(config, device, options, om)
     except Exception as _ee:
         logger.debug("vllm.apply_post_config skipped: %s", _ee)
 

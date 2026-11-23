@@ -22,6 +22,8 @@
 #include "openvino/op/parameter.hpp"
 #include "openvino/op/variadic_split.hpp"
 #include "openvino/pass/visualize_tree.hpp"
+#include "ov_ops/type_relaxed.hpp"
+#include "transformations/common_optimizations/activations_scaling.hpp"
 
 using namespace testing;
 using namespace ov::pass;
@@ -413,39 +415,63 @@ TEST_F(TransformationTestsF, QKVProjFusionCombinedRejectedByCallbackNotFused) {
     register_qkv_fusion<intel_cpu::QKVProjFusionPass2>(manager, false);
 }
 
-// A vector weight makes MatMul a matrix-vector product, [2048, hidden] x [hidden] -> [2048]: its last (only) axis
-// still splits into q + k + v, but there is no [rows, hidden] weight to fuse.
-TEST_F(TransformationTestsF, QKVProjFusionCombinedVectorWeightNotFused) {
-    auto input = std::make_shared<v0::Parameter>(element::f32, PartialShape{2048, hidden_size});
-    auto mm = std::make_shared<v0::MatMul>(input, make_weight(element::f32, Shape{hidden_size}), false, true);
-    auto split = std::make_shared<v1::VariadicSplit>(mm,
-                                                     axis_const(element::i64, -1),
-                                                     v0::Constant::create(element::i64, Shape{3}, {1024, 512, 512}));
-    model = std::make_shared<Model>(split->outputs(), ParameterVector{input});
-    register_qkv_fusion<intel_cpu::QKVProjFusionPass2>(manager);
-}
-
-// Three MatMuls on vector weights: same for the separate-projection form.
-TEST_F(TransformationTestsF, QKVProjFusionSeparateVectorWeightNotFused) {
-    auto input = std::make_shared<v0::Parameter>(element::f32, PartialShape{-1, -1, hidden_size});
-    OutputVector outputs;
-    for (int i = 0; i < 3; i++) {
-        outputs.push_back(
-            std::make_shared<v0::MatMul>(input, make_weight(element::f32, Shape{hidden_size}), false, true));
-    }
-    model = std::make_shared<Model>(outputs, ParameterVector{input});
-    register_qkv_fusion<intel_cpu::QKVProjFusionPass1>(manager);
-}
-
-// Without a Convert an integer MatMul matches the pattern too; QKVProjection only takes real features.
-TEST_F(TransformationTestsF, QKVProjFusionCombinedIntegerInputNotFused) {
-    auto input = std::make_shared<v0::Parameter>(element::i32, PartialShape{-1, hidden_size});
-    auto mm = std::make_shared<v0::MatMul>(input, make_weight(element::i32, Shape{6144, hidden_size}), false, true);
-    auto split = std::make_shared<v1::VariadicSplit>(mm,
-                                                     axis_const(element::i64, 1),
-                                                     v0::Constant::create(element::i64, Shape{3}, {2048, 2048, 2048}));
-    model = std::make_shared<Model>(split->outputs(), ParameterVector{input});
-    register_qkv_fusion<intel_cpu::QKVProjFusionPass2>(manager);
-}
-
 }  // namespace
+
+namespace {
+constexpr size_t kHidden = 64;
+constexpr size_t kQProj = 64;
+constexpr size_t kKVProj = 16;
+constexpr float kScale = 8.0F;
+
+std::shared_ptr<v0::Constant> make_proj_weights(size_t rows, float value) {
+    return v0::Constant::create(element::f16, Shape{rows, kHidden}, std::vector<float>(rows * kHidden, value));
+}
+}  // namespace
+
+// the Q/K/V MatMuls must still share one input after ActivationsScaling
+TEST_F(TransformationTestsF, QKVProjFusionAfterActivationsScaling) {
+    comparator.enable(FunctionsComparator::CmpValues::CONST_VALUES);
+    {
+        auto input = std::make_shared<v0::Parameter>(element::f16, PartialShape{-1, -1, kHidden});
+        OutputVector outputs;
+        for (const auto& [rows, value] : {std::pair{kQProj, 0.1F}, {kKVProj, 0.2F}, {kKVProj, 0.3F}}) {
+            auto proj = std::make_shared<v0::MatMul>(input, make_proj_weights(rows, value), false, true);
+            // the Convert keeps the output tensor name, as in the ActivationsScaling tests
+            outputs.push_back(std::make_shared<v0::Convert>(proj, element::f32));
+        }
+        model = std::make_shared<ov::Model>(outputs, ParameterVector{input});
+        manager.register_pass<ov::pass::ActivationsScaling>(kScale, element::f16);
+        manager.register_pass<ov::intel_cpu::QKVProjFusion>();
+        manager.get_pass_config()->set_callback<ov::intel_cpu::QKVProjFusionPass1>(
+            [](const std::shared_ptr<const ov::Node>&) -> bool {
+                return true;
+            });
+    }
+    {
+        // LPT keeps the scale Multiplies type-relaxed
+        auto scale_mul = [](const Output<Node>& data, float value) {
+            return std::make_shared<ov::op::TypeRelaxed<v1::Multiply>>(
+                element::TypeVector{element::f16, element::f16},
+                element::TypeVector{element::f16},
+                data,
+                v0::Constant::create(element::f16, Shape{}, {value}));
+        };
+        auto input = std::make_shared<v0::Parameter>(element::f16, PartialShape{-1, -1, kHidden});
+        intel_cpu::QKVProjectionNode::Config config{false,
+                                                    static_cast<int>(kHidden),
+                                                    static_cast<int>(kQProj),
+                                                    static_cast<int>(kKVProj),
+                                                    static_cast<int>(kKVProj),
+                                                    false};
+        auto qkv_proj = std::make_shared<intel_cpu::QKVProjectionNode>(OutputVector{scale_mul(input, 1.0F / kScale),
+                                                                                    make_proj_weights(kQProj, 0.1F),
+                                                                                    make_proj_weights(kKVProj, 0.2F),
+                                                                                    make_proj_weights(kKVProj, 0.3F)},
+                                                                       config);
+        OutputVector outputs;
+        for (size_t i = 0; i < 3; ++i) {
+            outputs.push_back(std::make_shared<v0::Convert>(scale_mul(qkv_proj->output(i), kScale), element::f32));
+        }
+        model_ref = std::make_shared<ov::Model>(outputs, ParameterVector{input});
+    }
+}

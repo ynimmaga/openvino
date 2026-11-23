@@ -25,7 +25,7 @@ from openvino.frontend.pytorch.torchdynamo.decompositions import get_aot_decompo
 from openvino.frontend.pytorch.torchdynamo.partition import Partitioner
 from openvino.frontend.pytorch.torchdynamo.execute import execute, execute_cached
 from openvino.frontend.pytorch.torchdynamo.compile import cached_model_name, openvino_compile_cached_model
-from openvino.frontend.pytorch.torchdynamo.backend_utils import _get_cache_dir, _get_device, _get_model_caching, _get_decompositions, _get_aot_autograd
+from openvino.frontend.pytorch.torchdynamo.backend_utils import _get_cache_dir, _get_device, _get_model_caching, _get_decompositions, _get_aot_autograd, _get_no_fallback
 
 from openvino import Core, Type, PartialShape
 
@@ -47,34 +47,15 @@ logger.setLevel(logging.WARNING)
     2) model = torch.compile(model, backend="openvino")
 """
 
-openvino_options = {}
-
-# Real example inputs of the graph being compiled, pushed by openvino() for
-# _freeze_static_inputs. A stack so an exception can't leave a stale entry.
+# Real example inputs for _freeze_static_inputs; a stack so an exception can't leave a stale entry.
 _real_example_inputs = []
 
 
 def _freeze_static_inputs(gm, example_inputs, fw_metadata):
     """Fold weight placeholders into Constants using fw_metadata.static_input_indices.
 
-    ``replace_params_with_constants`` pairs ``params_flat[i]`` with the i-th
-    placeholder, so it can only freeze weights that dynamo kept as module
-    attributes. Once inlining of builtin nn modules became unconditional
-    (torch 2.13 made ``inline_inbuilt_nn_modules`` a no-op that is always
-    True), every weight is lifted to a graph input instead and both
-    ``params_flat`` and ``params_flat_unwrap_subclasses`` come back empty --
-    nothing is frozen. The weights then reach OpenVINO as Parameters rather
-    than Constants, which costs a Transpose per MatMul, blocks constant
-    folding, and yields wrong results.
-
-    ``fw_metadata.static_input_indices`` marks the weights regardless, so
-    freeze by index. This is not a 2.13-only fallback: on 2.11, where
-    params_flat is populated, the index set is identical to the one the
-    upstream helper derives, so this one path serves both. The indices are
-    not contiguous (the real runtime inputs are interleaved), hence the
-    explicit complement rather than a prefix slice. Returns the preserved
-    (unfrozen) indices, or None if this path does not apply and the caller
-    should use the upstream helper.
+    With weights lifted to graph inputs (always since torch 2.13), params_flat is empty and
+    replace_params_with_constants freezes nothing. Returns the preserved indices, or None to use that helper.
     """
     static = set(getattr(fw_metadata, "static_input_indices", None) or ())
     if not static:
@@ -83,8 +64,7 @@ def _freeze_static_inputs(gm, example_inputs, fw_metadata):
     from torch._functorch._aot_autograd.schemas import MutationType
 
     placeholders = gm.graph.find_nodes(op="placeholder")
-    # example_inputs are FakeTensors; real ones were stashed by openvino().
-    # Require an exact length match, or fall back to the upstream helper.
+    # example_inputs are FakeTensors; the real ones were stashed by openvino().
     real = _real_example_inputs[-1] if _real_example_inputs else None
     if real is None or len(real) != len(placeholders):
         logger.debug("static-input freezing skipped: real inputs %s vs %d placeholders",
@@ -92,8 +72,7 @@ def _freeze_static_inputs(gm, example_inputs, fw_metadata):
         return None
     example_inputs = real
 
-    # Same exclusions as replace_params_with_constants: an input that is
-    # mutated or aliased by an output cannot become a Constant.
+    # As in replace_params_with_constants: mutated or output-aliased inputs can't become Constants.
     mutated = {i for i, m in enumerate(fw_metadata.input_info)
                if m.mutation_type in (MutationType.MUTATED_IN_GRAPH,
                                       MutationType.MUTATED_OUT_GRAPH)}
@@ -109,7 +88,6 @@ def _freeze_static_inputs(gm, example_inputs, fw_metadata):
             replace_node_with_constant(gm, node, example_inputs[i])
         else:
             preserved_arg_indices.append(i)
-    # Every static input just became a Constant, so none remain to track.
     fw_metadata.static_input_indices = []
     gm.recompile()
     return preserved_arg_indices
@@ -117,14 +95,12 @@ def _freeze_static_inputs(gm, example_inputs, fw_metadata):
 @fake_tensor_unsupported
 def openvino(subgraph, example_inputs, options=None):
     if _get_aot_autograd(options):
-        global openvino_options
-        openvino_options = options
         decompositions = _get_decompositions(options) + get_inf_decomposition_list() + get_aot_decomposition_list()
-        # aot_autograd hands fw_compiler FakeTensors; stash the real ones
-        # (same order as AOT placeholders) here for _freeze_static_inputs.
+        compiler = partial(fx_openvino, options=options)
+        # aot_autograd hands fw_compiler FakeTensors; stash the real ones for _freeze_static_inputs.
         _real_example_inputs.append(list(example_inputs))
         try:
-            return aot_autograd(fw_compiler=fx_openvino, bw_compiler=fx_openvino, decompositions=get_decompositions(decompositions))(subgraph, example_inputs)
+            return aot_autograd(fw_compiler=compiler, bw_compiler=compiler, decompositions=get_decompositions(decompositions))(subgraph, example_inputs)
         finally:
             _real_example_inputs.pop()
     return fx_openvino(subgraph, example_inputs, options)
@@ -134,8 +110,6 @@ if "openvino" not in torch.compiler.list_backends():
 
 def fx_openvino(subgraph, example_inputs, options=None):
     try:
-        if len(openvino_options) != 0:
-            options = openvino_options
         executor_parameters = None
         inputs_reversed = False
         openvino_model_caching = _get_model_caching(options)
@@ -166,12 +140,9 @@ def fx_openvino(subgraph, example_inputs, options=None):
                 fw_metadata = tracing_context.fw_metadata
                 params_flat = tracing_context.params_flat
                 if not params_flat:
-                    # torch._inductor.freezing._freeze reads this one.
                     params_flat = getattr(
                         tracing_context, "params_flat_unwrap_subclasses", None) or []
                 assert fw_metadata is not None and params_flat is not None
-                # static_input_indices marks the weights on every torch
-                # version; falls back to replace_params_with_constants if empty.
                 preserved_arg_indices = _freeze_static_inputs(
                     subgraph, example_inputs, fw_metadata)
             if preserved_arg_indices is None:
@@ -180,12 +151,15 @@ def fx_openvino(subgraph, example_inputs, options=None):
             model = subgraph
         else:
             decompositions = _get_decompositions(options) + get_inf_decomposition_list()
-            model = make_fx(
-                subgraph,
-                decomposition_table=get_decompositions(decompositions),
-                tracing_mode="fake",
-                _allow_non_fake_inputs=True,
-            )(*example_inputs)
+            # Trace outside Dynamo's TracingContext so make_fx creates its own fake mode;
+            # otherwise its shape guards leak into Dynamo's ShapeEnv with make_fx input names.
+            with torch._guards.tracing(None):
+                model = make_fx(
+                    subgraph,
+                    decomposition_table=get_decompositions(decompositions),
+                    tracing_mode="fake",
+                    _allow_non_fake_inputs=True,
+                )(*example_inputs)
             with torch.no_grad():
                 model.eval()
         partitioner = Partitioner(options)
@@ -213,15 +187,6 @@ def fx_openvino(subgraph, example_inputs, options=None):
         if _get_no_fallback(options):
             raise
         return compile_fx(subgraph, example_inputs)
-
-
-def _get_no_fallback(options):
-    """Resolve "no_fallback" like execute.py does: through the vLLM preset when it's present."""
-    try:
-        from openvino.frontend.pytorch.torchdynamo.vllm.preset import bool_opt
-    except ImportError:
-        return bool(options and options.get("no_fallback", False))
-    return bool_opt(options, "no_fallback", False)
 
 
 def reset():

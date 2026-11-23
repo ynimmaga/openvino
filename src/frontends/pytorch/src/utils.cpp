@@ -350,9 +350,7 @@ PadType convert_pad(const std::string& pt_pad) {
 };
 
 Output<Node> flatten_list_element_for_concat(const Output<Node>& elem) {
-    // Elements of a shape-building list reach us with inconsistent ranks
-    // (rank-0 literal ints vs rank-1 Gather(ShapeOf,dim)); reshape to 1-D
-    // rather than unsqueeze, so Concat doesn't reject the mixed ranks.
+    // Shape-list elements mix ranks 0 and 1; reshape to 1-D, since Unsqueeze would make Concat reject them.
     const auto minus_one = v0::Constant::create(element::i32, Shape{1}, {-1});
     return std::make_shared<v1::Reshape>(elem, minus_one, false);
 }
@@ -691,6 +689,20 @@ Output<Node> get_input_with_floating_type(const NodeContext& context, size_t idx
     auto dummy_const = context.mark_node(v0::Constant::create(element::f32, Shape({}), {0.5}))->output(0);
     align_eltwise_input_types(context, x, dummy_const, false, true);
     return x;
+}
+
+element::Type get_input_element_type(const NodeContext& context, size_t idx) {
+    auto type = context.get_input(static_cast<int>(idx)).get_element_type();
+    if (type.is_dynamic()) {
+        type = context.get_input_from_visible_context(idx).get_element_type();
+    }
+    if (type.is_dynamic()) {
+        const auto decoded = simplified_type_interpret(context.get_input_type(idx));
+        if (decoded.is<element::Type>()) {
+            type = decoded.as<element::Type>();
+        }
+    }
+    return type;
 }
 
 Output<Node> trunc_toward_zero(const NodeContext& context, const Output<Node>& x) {
@@ -1227,6 +1239,11 @@ bool index_tensor_on_list(ov::pass::NodeRegistry& rg,
         auto adv_index = rg.make<v1::Multiply>(m_idx, multiplier);
         cum_adv_index = rg.make<v1::Add>(cum_adv_index, adv_index);
         multiplier = rg.make<v1::Multiply>(multiplier, input_dims->output(input_id));
+    }
+    if (adv_idx_count > 1 && std::all_of(advanced_ids.begin(), advanced_ids.end(), [&](size_t id) {
+            return masked_indices[id].get_partial_shape().rank() == 0;
+        })) {
+        cum_adv_index = rg.make<v0::Squeeze>(cum_adv_index, zero);
     }
     std::shared_ptr<Node> gather = rg.make<v8::Gather>(flatten_input, cum_adv_index, zero);
     OutputVector concat_dims;

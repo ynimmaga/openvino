@@ -23,7 +23,6 @@ class OperatorSupport(OpSupport):
     """Operator support for OpenVINO backend."""
 
     def __init__(self, options):
-        self._ov_options = options
         support_dict = {
             "_operator.add": None,
             "_operator.floordiv": None,
@@ -131,6 +130,8 @@ class OperatorSupport(OpSupport):
             "torch.ops.aten.floor_divide.default": None,
             "torch.ops.aten.fmod.Scalar": None,
             "torch.ops.aten.fmod.Tensor": None,
+            "torch.ops.aten.fractional_max_pool2d.default": None,
+            "torch.ops.aten.fractional_max_pool3d.default": None,
             "torch.ops.aten.full.default": None,
             "torch.ops.aten.full.names": None,
             "torch.ops.aten.full_like.default": None,
@@ -291,11 +292,10 @@ class OperatorSupport(OpSupport):
             "torch.ops.quantized_decomposed.dequantize_per_tensor.default": None,
             "torch.ops.quantized_decomposed.dequantize_per_channel.default": None,
         }
-        # Optional: adds the OV paged_attention op to support_dict when
-        # options["pa_translate"] is set. No-op on non-vLLM graphs.
+        # Adds the OV paged_attention op when options["pa_translate"] is set.
         try:
             from openvino.frontend.pytorch.torchdynamo import vllm as _vllm
-            _vllm.maybe_register_pa_op(support_dict, getattr(self, "_ov_options", None))
+            _vllm.maybe_register_pa_op(support_dict, options)
         except Exception:
             pass
 

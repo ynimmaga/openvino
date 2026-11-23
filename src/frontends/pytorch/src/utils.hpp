@@ -158,6 +158,9 @@ Output<Node> try_constfold(const Output<Node>& x);
 
 Output<Node> get_input_with_floating_type(const NodeContext& context, size_t idx);
 
+/// \brief Returns the input element type, falling back to the visible context and the decoder type when it is dynamic.
+element::Type get_input_element_type(const NodeContext& context, size_t idx);
+
 /// \brief Rounds toward zero, keeping infinities and NaN. Integer inputs are returned unchanged.
 Output<Node> trunc_toward_zero(const NodeContext& context, const Output<Node>& x);
 
@@ -242,8 +245,7 @@ std::shared_ptr<ov::op::v0::Parameter> make_tagged_parameter(const NodeContext& 
                                                              const element::Type& et,
                                                              const PartialShape& ps);
 
-/// \brief Get-or-create side-channel Parameter `tag`, shared by every op of the conversion session
-/// (per-sequence metadata reused by all paged layers).
+/// \brief Get-or-create side-channel Parameter `tag`, shared by every op of the conversion session.
 std::shared_ptr<ov::op::v0::Parameter> get_or_make_shared_pa_param(const NodeContext& context,
                                                                    const std::string& tag,
                                                                    const element::Type& et,
