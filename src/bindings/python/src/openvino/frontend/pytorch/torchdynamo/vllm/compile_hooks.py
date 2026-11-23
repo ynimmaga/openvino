@@ -173,41 +173,6 @@ def symint_shape_sources(gm, args):
 
 def symbolic_tensor_dims(gm, args):
     """{tensor_arg_index: dims dynamo traced symbolically}, read off meta['val'].
-<<<<<<< HEAD
-
-    Empty when gm is None, placeholders don't line up with args, or the trace
-    is static.
-    """
-    if gm is None:
-        return {}
-    import torch
-    placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
-    if len(placeholders) != len(args):
-        return {}
-    dims = {}
-    for idx, node in enumerate(placeholders):
-        meta_val = node.meta.get("val", None)
-        if isinstance(args[idx], torch.Tensor) and isinstance(meta_val, torch.Tensor):
-            symbolic = {d for d, extent in enumerate(meta_val.shape) if isinstance(extent, torch.SymInt)}
-            if symbolic:
-                dims[idx] = symbolic
-    return dims
-
-
-def bake_symint_constants(om, args, dyn_shapes: bool = True, gm=None):
-    """Resolve integer FX inputs (seq_lens, past_lens, ...) and drop their Parameters.
-
-    Left as OV Parameters, shape inference takes their unset upper bound of 0
-    and collapses downstream ops to size 0. Each is replaced by
-    Gather(ShapeOf(tensor_input), dim) when a source tensor dim is known (one
-    compiled model then serves all shapes), else a frozen trace-time Constant.
-    Tensor Parameters go fully dynamic when dyn_shapes is set or every int came
-    from a ShapeOf, to avoid const-folding that ShapeOf back to a fixed size.
-    With no int inputs at all there is nothing to freeze, so the dims dynamo
-    traced symbolically go dynamic and the rest stay static: one compiled
-    model then serves every length (e.g. an embedding-lookup-only graph).
-    """
-=======
 
     Empty when gm is None, placeholders don't line up with args, or the trace
     is static.
@@ -233,7 +198,6 @@ def bake_symint_constants(om: "Model", args: Sequence[Any], dyn_shapes: bool = T
     """Replace integer FX input Parameters (their upper bound of 0 collapses shapes) by ShapeOf dims or Constants.
 
     Tensor Parameters go dynamic when dyn_shapes is set or every int came from a ShapeOf, which must not const-fold."""
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     import torch
     import numpy as np
     from openvino import Type, PartialShape, opset1 as _opset1, opset8 as _opset8
