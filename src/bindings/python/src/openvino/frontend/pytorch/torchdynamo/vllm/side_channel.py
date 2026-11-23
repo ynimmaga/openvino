@@ -52,7 +52,6 @@ def _ov_tensor_over_torch(tensor, param_dt, _ov):
 
 _on_gpu_cache = {}  # id(compiled) -> bool
 
-
 def _on_gpu(compiled) -> bool:
     key = id(compiled)
     if key not in _on_gpu_cache:

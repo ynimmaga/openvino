@@ -16,9 +16,6 @@ here. So on CPU it is off unless OV_LM_HEAD=1.
 On GPU it is on unless OV_LM_HEAD=0: there the alternative is a CPU GEMM
 between two GPU steps, and an NNCF per-row int8 lm_head (or tied embedding)
 is compiled compressed, reading half the bytes of the dense f16 weight.
-
-An lm_head tied to an int4 embedding has no dense weight for torch to use, so
-it runs here on every device, whatever OV_LM_HEAD says.
 """
 
 import logging
@@ -59,6 +56,66 @@ def _copy_into(ov_tensor, tensor):
         dst.view(np.uint16)[:] = src.view(torch.uint16).numpy()
     else:
         dst[:] = src.numpy()
+
+def _int8_weight(int8, et):
+    """Dense-shaped [V, H] lm_head weight from NNCF per-row int8, as a graph.
+
+    The u8 Constant -> Convert -> Subtract -> Multiply chain is the pattern the
+    device plugins recognize as a compressed FC, so the weight stays int8 in
+    device memory instead of being folded to `et`.
+    """
+    import openvino as ov
+    import openvino.opset13 as op
+
+    stored, scale, zero_point = int8
+    weight = op.convert(op.constant(stored.contiguous().numpy()), et)
+    if zero_point is not None:
+        weight = op.subtract(
+            weight, op.convert(op.constant(zero_point.contiguous().numpy()), et))
+    scale = op.constant(scale.contiguous().numpy())
+    if scale.get_element_type() != et:
+        scale = op.convert(scale, et)
+    return op.multiply(weight, scale)
+
+
+def _u4_constant(packed, shape):
+    """u4 Constant from NNCF-packed nibbles (low first), which is also OV's u4 layout."""
+    import numpy as np
+    import openvino as ov
+    import openvino.opset13 as op
+
+    tensor = ov.Tensor(ov.Type.u4, shape)
+    np.asarray(tensor.data).reshape(-1)[:] = packed.contiguous().reshape(-1).numpy()
+    return op.constant(tensor)
+
+
+def _int4_weight(int4, et):
+    """Dense-shaped [V, H] lm_head weight from an NNCF grouped int4 table, as a graph.
+
+    `int4` is the tied embedding's `(stored u8 [V, H/2] packed, scale
+    [V, groups, 1], zero_point u8 [V, groups/2] packed or None)`. u4 Constant
+    -> Convert -> Subtract -> Multiply -> Reshape is the grouped compressed-FC
+    pattern the device plugins keep int4 in device memory.
+    """
+    import numpy as np
+    import openvino.opset13 as op
+    import torch
+
+    stored, scale, zero_point = int4
+    vocab, groups = scale.shape[0], scale.shape[1]
+    hidden = stored.shape[1] * 2
+    weight = op.convert(_u4_constant(stored, [vocab, groups, hidden // groups]), et)
+    if zero_point is None:
+        # Symmetric nibbles carry a +8 bias to stay unsigned (model_loader._dequantize).
+        zp = _u4_constant(torch.tensor([8], dtype=torch.uint8), [1])
+    else:
+        zp = _u4_constant(zero_point, [vocab, groups, 1])
+    weight = op.subtract(weight, op.convert(zp, et))
+    scale = op.constant(scale.float().contiguous().numpy())
+    if scale.get_element_type() != et:
+        scale = op.convert(scale, et)
+    weight = op.multiply(weight, scale)
+    return op.reshape(weight, op.constant(np.array([vocab, hidden], dtype=np.int64)), False)
 
 
 def _int8_weight(int8, et):

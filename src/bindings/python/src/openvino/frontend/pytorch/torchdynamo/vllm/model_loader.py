@@ -63,12 +63,12 @@ logger = logging.getLogger(__name__)
 
 LOAD_FORMAT = "nncf_hooks"
 _HOOK = "__nncf_hooks.post_hooks.{0}__0.0.{1}"
+_registered: type[Any] | None = None
 # Per-row int8 weights kept in stored form: lm_head's own, and the embedding
 # (looked up as int8, and the source of a tied lm_head).
 _LM_HEAD_SOURCES = ("lm_head.weight", "embed_tokens.weight")
 # Input embeddings kept packed when stored grouped int4 (_keep_int4_embeddings).
 _INT4_EMBEDDING_SOURCES = ("embed_tokens.weight", "embed_tokens_per_layer.weight")
-_registered = None
 
 
 def _hook_key(weight_name, field):
@@ -156,14 +156,8 @@ def _attach_int4_embeddings(model, pending):
     return unloaded
 
 
-def _pt2_state_dict(path):
-    """Persistent parameters and buffers of a `torch.export.save` archive.
-
-    The non-persistent buffers in `constants` (HF's rotary `inv_freq`) are not
-    checkpoint data; `save_pretrained` never writes them either. Loading
-    rebuilds the graph, so its output type must deserialize here: HF's
-    `CausalLMOutputWithPast` does not, a `return_dict=False` tuple does.
-    """
+def _pt2_state_dict(path: str) -> "dict[str, torch.Tensor]":
+    """Persistent parameters and buffers of a `torch.export.save` archive (exported with return_dict=False)."""
     import torch
 
     try:
@@ -276,6 +270,8 @@ def _define_loader():
         def _weights(self, model, model_config):
             params = dict(model.named_parameters())
             out_dtype = model_config.dtype
+            quant_config = getattr(model_config.hf_config, "quantization_config", None) or {}
+            bits = quant_config.get("bits", 4)
             model._ov_nncf_int8_weights = {}
             model._ov_nncf_int4_pending = {}
             keep_int4 = _keep_int4_embeddings()
@@ -304,11 +300,14 @@ def _define_loader():
                         yield f"{module}.qweight", stored.reshape(out_features, -1)
                         yield f"{module}.scale", scale.reshape(out_features, groups)
                         if zp is not None:
+                            # int4 zero points are packed; unpacked, they concatenate like `scale`.
+                            zp = _unpack_uint4(zp) if bits == 4 else zp
                             # quantization.py stores the zero point
                             # unpacked so it concatenates like `scale`.
                             yield (f"{module}.zero_point",
                                    _unpack_uint4(zp).reshape(out_features, groups))
-                    elif scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES):
+                    elif (scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES)
+                          and (zp is None or scale.shape[1] % 2 == 0)):
                         # Left packed, and the dense weight unloaded; see
                         # _attach_int4_embeddings.
                         model._ov_nncf_int4_pending[name] = (stored, scale, zp)

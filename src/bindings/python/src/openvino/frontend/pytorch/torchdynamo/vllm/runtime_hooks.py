@@ -16,8 +16,8 @@ from .side_channel import _bind_gdn_side_channel, _bind_paged_attention_side_cha
 
 
 # Per-InferRequest caches for the OV_FAST_INFER fast path.
-_fastinfer_port_cache = {}
-_fastinfer_bound_ids = {}   # id(req) -> [[val_id, ov_tensor_ref], ...] per port
+_fastinfer_port_cache: dict[int, list[ConstOutput]] = {}
+_fastinfer_bound_ids: dict[int, list[list[Any]]] = {}   # id(req) -> [[val_id, ov_tensor_ref], ...] per port
 _fastinfer_out_cache = {}   # id(req) -> {out_port: numpy_view}
 _fastinfer_out_static = {}  # id(compiled) -> bool: output views are reusable
 _device_bound = {}          # id(req) -> {port name: RemoteTensor set on it}

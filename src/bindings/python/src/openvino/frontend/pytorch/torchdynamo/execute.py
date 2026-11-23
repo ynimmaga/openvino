@@ -408,7 +408,7 @@ def openvino_execute(
                 # Profile/dummy run. A shape-agnostic compile is the serving model
                 # and is kept for real infer; a shape-specialized one is never
                 # reused, so drop its cache references and free the repacked weights.
-                if _evict_profile and _fresh_compile and not _shape_agnostic_compile(gm, args, options):
+                if _fresh_compile and os.environ.get("OV_EVICT_PROFILE_COMPILE", "1") != "0" and not _shape_agnostic_compile(gm, args, options):
                     compiled_cache.pop(cache_key, None)
                     req_cache.pop(cache_key, None)
                     if struct_key is not None:
