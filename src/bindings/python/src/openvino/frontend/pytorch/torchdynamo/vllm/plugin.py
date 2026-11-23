@@ -17,14 +17,11 @@ import contextlib
 import itertools
 import logging
 import os
-<<<<<<< HEAD
-=======
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import torch
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
 import re
 
 logger = logging.getLogger(__name__)
@@ -218,25 +215,16 @@ def _install_compressed_embeddings(model) -> None:
 
 def _int4_embedding_of(model, weight):
     """The packed int4 table of the embedding whose (tied) weight is `weight`, or None."""
-<<<<<<< HEAD
-=======
     if not hasattr(model, "modules"):
         return None
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     for module in model.modules():
         if getattr(module, "weight", None) is weight and getattr(module, "_ov_nncf_int4", None) is not None:
             return module._ov_nncf_int4
     return None
 
 
-<<<<<<< HEAD
-def _install_ov_lm_head(model) -> None:
-    """(Re)compile lm_head on OV and swap it onto `lm_head.cpu_linear`.
-
-=======
 def _install_ov_lm_head(model: "torch.nn.Module") -> None:
     """(Re)build `lm_head.cpu_linear` from the current weight: oneDNN by default, OV with OV_LM_HEAD=1.
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     Rerun on every weight mutation (reload_weights/update_weights below) since
     build_ov_lm_head bakes the weight into an OV constant. On CPU defaults to
     the oneDNN dispatch: the OV path roughly doubles main-graph per-step time
@@ -418,45 +406,6 @@ def _mark_token_dim_dynamic(compiled_forward, eager_forward):
     from right after it already includes that model.
     """
     import inspect
-<<<<<<< HEAD
-    import torch
-    param_names = list(inspect.signature(eager_forward).parameters)
-
-    def forward(*args, **kwargs):
-        for name, dim in _TOKEN_DIM_INPUTS.items():
-            tensor = kwargs.get(name)
-            if tensor is None and name in param_names and param_names.index(name) < len(args):
-                tensor = args[param_names.index(name)]
-            if isinstance(tensor, torch.Tensor) and tensor.dim() > 0:
-                torch._dynamo.maybe_mark_dynamic(tensor, dim % tensor.dim())
-        return compiled_forward(*args, **kwargs)
-
-    return forward
-
-
-_SELF_ROOTED_GUARD = re.compile(r"(\w+\()*self\b")
-
-
-def _drop_self_guards(guard_entries):
-    """Dynamo `guard_filter_fn`: keep the guards on the forward's inputs only.
-
-    The compiled frame is the model's bound forward, so `self` is a frame input
-    and dynamo guards every weight and module attribute tracing touched
-    (~20k checks on Gemma 4, re-run before each decode step). The weights are
-    baked into the OV model as constants, so those guards can't change which
-    graph runs. vLLM's own compile path skips all guards; this keeps the input
-    guards so a change of input rank or dtype still recompiles.
-    """
-    # Names are source expressions rooted at `self`, possibly wrapped, e.g.
-    # "self._modules['model']..." or "dict(type(self)...)".
-    keep = [not _SELF_ROOTED_GUARD.match(entry.name) for entry in guard_entries]
-    logger.debug("[OV plugin] dynamo guards: kept %d of %d", sum(keep), len(keep))
-    return keep
-
-
-def _compile_ov_forward(model, options) -> None:
-    import torch
-=======
     import torch
     param_names = list(inspect.signature(eager_forward).parameters)
 
@@ -494,7 +443,6 @@ def _drop_self_guards(guard_entries):
 
 def _compile_ov_forward(model: "torch.nn.Module", options: dict[str, Any]) -> None:
     import torch
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     if os.environ.get("OV_DYNAMO_FULL_GUARDS", "0") == "0":
         options = dict(options, guard_filter_fn=_drop_self_guards)
     compiled = torch.compile(
@@ -664,11 +612,7 @@ def _patch_release_weights():
     CPUWorker._ov_plugin_release_patched = True
 
 
-<<<<<<< HEAD
-def _patch_cpu_model_runner():
-=======
 def _patch_cpu_model_runner() -> None:
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     try:
         from vllm.v1.worker.cpu_model_runner import CPUModelRunner
     except Exception:
@@ -843,16 +787,12 @@ def _patch_worker_update_weights():
         _orig_finish_weight_update(self, *args, **kwargs)
         model_runner = getattr(self, "model_runner", None)
         if model_runner is not None and _ov_active(model_runner):
-<<<<<<< HEAD
-            if _released_storages:
-=======
             model = model_runner.get_model()
             if any(
                 tensor.untyped_storage().data_ptr() in _released_storages
                 for tensor in itertools.chain(model.parameters(), model.buffers())
                 if tensor.device.type == "cpu" and not tensor.is_meta
             ):
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
                 # A sync may cover only some weights, so the rest would rebuild from garbage.
                 raise RuntimeError(
                     "OpenVINO vLLM backend: weight updates need the torch weights, which were "
@@ -968,40 +908,6 @@ _OV_DEFAULT_KVCACHE_GIB = 4
 # whole pool up front, and gpu_memory_utilization alone would reserve half of an
 # iGPU's (host) memory. 1 holds ~16 full 2k-token sequences of a 1B model.
 _OV_DEFAULT_GPU_KVCACHE_GIB = 1
-<<<<<<< HEAD
-
-
-# The GPU PagedAttention kernel's block size (cldnn::paged_attention::block_size).
-_OV_GPU_BLOCK_SIZE = 16
-
-
-def _check_device_kv_config(vllm_config):
-    """Fit vLLM's config to an OV-owned, device-resident KV cache, or refuse it.
-
-    Sets the GPU kernel's block size. The KV size is left unset: it comes from
-    device memory (see _patch_device_kv_cache), not the CPU default below.
-    Features that read or write KV contents from the host can't reach it.
-    """
-    cache_config = vllm_config.cache_config
-    if cache_config.block_size != _OV_GPU_BLOCK_SIZE:
-        logger.info("[OV plugin] block_size %s -> %d for the OpenVINO GPU PagedAttention kernel",
-                    cache_config.block_size, _OV_GPU_BLOCK_SIZE)
-        cache_config.block_size = _OV_GPU_BLOCK_SIZE
-    unsupported = []
-    if getattr(vllm_config, "kv_transfer_config", None) is not None:
-        unsupported.append("kv_transfer_config (KV connectors)")
-    if getattr(cache_config, "kv_offloading_size", None):
-        unsupported.append("kv_offloading_size")
-    if getattr(vllm_config.model_config, "enable_sleep_mode", False):
-        unsupported.append("enable_sleep_mode")
-    if unsupported:
-        raise ValueError(
-            "OpenVINO vLLM backend: the GPU KV cache lives in device memory owned by OpenVINO, "
-            "so these features, which access it from the host, are unsupported: " + ", ".join(unsupported))
-
-
-def _patch_kv_cache_default():
-=======
 
 
 # The GPU PagedAttention kernel's block size (cldnn::paged_attention::block_size).
@@ -1034,7 +940,6 @@ def _check_device_kv_config(vllm_config) -> None:
 
 
 def _patch_kv_cache_default() -> None:
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     """Default the KV-cache size for OV runs only.
 
     Hooks CpuPlatform.check_and_update_config, which is where vLLM turns
@@ -1071,20 +976,6 @@ def _patch_kv_cache_default() -> None:
     CpuPlatform._ov_plugin_kv_default_patched = True
 
 
-<<<<<<< HEAD
-def _patch_omp_wait_policy():
-    """Spawn OV workers with OMP_WAIT_POLICY=PASSIVE unless the user set it.
-
-    vLLM pins one libgomp thread per core, and the CPU plugin pins its TBB
-    workers to the same cores during infer. By default each libgomp worker
-    spins for about 1 ms after every torch parallel region, which steals those
-    cores from the next OV infer (TinyLlama decode 21.1 -> 18.3 ms/token,
-    Qwen3-8B 102 -> 98 ms/token). Inductor runs only OMP and needs the spin, so
-    this is limited to OV configs and to the worker spawn:
-    OMPProcessManager.configure_omp_envs scopes vLLM's own OMP variables the
-    same way, so the parent process and later non-OV engines are unaffected.
-    libgomp reads the variable at load, hence the spawn and not load_model.
-=======
 def _warn_if_spinning_single_process():
     """Warn when an in-process engine runs without OMP_WAIT_POLICY.
 
@@ -1245,7 +1136,6 @@ def _patch_omp_wait_policy() -> None:
     """Spawn OV workers with OMP_WAIT_POLICY=PASSIVE unless the user set it.
     Spinning libgomp threads steal the cores OV's TBB workers are pinned to. Set at spawn, since libgomp reads it at
     load, and scoped like vLLM's own OMP variables, so other engines keep the spin.
->>>>>>> 61cf47ed1a (VLLM Support of GPU)
     """
     try:
         from vllm.utils.ompmultiprocessing import OMPProcessManager
