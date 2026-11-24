@@ -160,8 +160,21 @@ def _raise_dynamo_cache_limit() -> None:
         logger.debug("[OV plugin] dynamo fail_on_recompile_limit_hit enabled")
 
 
+_MODULE_GUARD_PREFIXES = ("self.", "G[", "type(G", "dict(G", "dict(type(")
+
+
+def _keep_input_guards(entries: Any) -> list[bool]:
+    """Keep the guards on forward() inputs and global state, which tell the static and dynamic entries apart.
+
+    Drops the ~15k module/global guards (about 1 ms per step); weights reload through torch._dynamo.reset().
+    """
+    return [not e.name.startswith(_MODULE_GUARD_PREFIXES) for e in entries]
+
+
 def _compile_ov_forward(model: "torch.nn.Module", options: dict[str, Any]) -> None:
     import torch
+    if os.environ.get("OV_DYNAMO_MODULE_GUARDS", "0") == "0":
+        options = dict(options, guard_filter_fn=_keep_input_guards)
     model.forward = torch.compile(
         model._ov_eager_forward,
         backend="openvino",

@@ -59,6 +59,10 @@ def _zero_scalar_i32() -> np.ndarray:
     return np.array(0, dtype=np.int32)
 
 
+# Content -> (block_indices, block_indices_begins): equal tables reuse the arrays, so OV_FAST_INFER skips rebinding.
+_pa_block_indices_stable: dict[tuple[bytes, bytes], tuple[np.ndarray, np.ndarray]] = {}
+_PA_BLOCK_INDICES_STABLE_MAX = 256
+
 # id(compiled) -> {layer_name: {field: parameter_name}}, built on first bind.
 _pa_layout_cache: dict[int, dict[str, dict[str, str]]] = {}
 
@@ -357,7 +361,7 @@ def _bind_paged_attention_side_channel(compiled: "CompiledModel") -> dict[str, A
             raise RuntimeError(
                 f"OpenVINO vLLM backend: no KV cache to bind for attention layer {layer_name!r} "
                 f"(resolved as {meta_layer_name!r}) during a real forward step")
-        if key_cache_np is None:
+        if key_cache_np is None and ("key_cache" in fields or "value_cache" in fields):
             # Dummy cache; Hk/S must match the real ones, or CPU PA caches 1/1 and later asserts.
             import openvino as _ov_fb
             _fb_kv_heads, _fb_head_size = _pa_auto_detect_kv_geom(
@@ -425,6 +429,14 @@ def _bind_paged_attention_side_channel(compiled: "CompiledModel") -> dict[str, A
                         begins[0] = 0
                         np.cumsum(bps_np * _ov_ratio, out=begins[1:])
                         block_indices_begins_np = begins
+                        _stable_key = (block_indices_np.tobytes(), begins.tobytes())
+                        _stable = _pa_block_indices_stable.get(_stable_key)
+                        if _stable is None:
+                            if len(_pa_block_indices_stable) >= _PA_BLOCK_INDICES_STABLE_MAX:
+                                _pa_block_indices_stable.clear()
+                            _stable = (block_indices_np, block_indices_begins_np)
+                            _pa_block_indices_stable[_stable_key] = _stable
+                        block_indices_np, block_indices_begins_np = _stable
                         _bi_cache[_bi_key] = (block_indices_np, block_indices_begins_np)
             except Exception:
                 logger.error("[OV plugin] block table bind failed for layer %r", layer_name)
@@ -590,5 +602,5 @@ def _bind_gdn_side_channel(compiled: "CompiledModel") -> tuple[dict[str, Any], C
 def clear_caches() -> None:
     """Drop every per-model binding cache: their id() keys are reused once the models are freed."""
     for cache in (_pa_kv_ovt_cache, _pa_sliding_window_cache, _pa_layer_static_cache, _pa_layout_cache,
-                  _gdn_layout_cache):
+                  _gdn_layout_cache, _pa_block_indices_stable):
         cache.clear()

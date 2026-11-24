@@ -17,12 +17,24 @@ from .side_channel import _bind_gdn_side_channel, _bind_paged_attention_side_cha
 # Per-InferRequest caches for the OV_FAST_INFER fast path.
 _fastinfer_port_cache: dict[int, list[ConstOutput]] = {}
 _fastinfer_bound_ids: dict[int, list[list[Any]]] = {}   # id(req) -> [[val_id, ov_tensor_ref], ...] per port
+# id(compiled) -> (input ports, each port's "__pa__" names); get_names() on every port per step costs ~0.2 ms.
+_port_layout_cache: dict[int, tuple[list[ConstOutput], list[tuple[str, ...]]]] = {}
 
 
 def clear_caches() -> None:
     """Drop the fast-infer caches: their id() keys are reused once the objects are freed."""
-    for cache in (_fastinfer_port_cache, _fastinfer_bound_ids):
+    for cache in (_fastinfer_port_cache, _fastinfer_bound_ids, _port_layout_cache):
         cache.clear()
+
+
+def _port_layout(compiled: CompiledModel) -> tuple[list[ConstOutput], list[tuple[str, ...]]]:
+    layout = _port_layout_cache.get(id(compiled))
+    if layout is None:
+        ports = list(compiled.inputs)
+        names = [tuple(n for n in p.get_names() if n.startswith("__pa__")) for p in ports]
+        layout = (ports, names)
+        _port_layout_cache[id(compiled)] = layout
+    return layout
 
 
 # Returned by run_pa_infer: skip this infer and run eager.
@@ -55,14 +67,7 @@ def run_pa_infer(
 
 def has_pa_inputs(compiled: CompiledModel) -> bool:
     """Return True if any input of `compiled` is a ``__pa__`` Parameter."""
-    for inp in compiled.inputs:
-        names = inp.get_names()
-        if not names:
-            continue
-        for name in names:
-            if name.startswith("__pa__"):
-                return True
-    return False
+    return any(_port_layout(compiled)[1])
 
 
 def should_skip_pa_infer() -> bool:
@@ -104,12 +109,8 @@ def build_call_kwargs(
         return None, None
     call_kwargs: dict[ConstOutput, Any] = {}
     positional = []
-    for inp in compiled.inputs:
-        pa_tensor = None
-        for name in inp.get_names():
-            if name.startswith("__pa__") and name in pa_inputs_by_pos:
-                pa_tensor = pa_inputs_by_pos[name]
-                break
+    for inp, pa_names in zip(*_port_layout(compiled)):
+        pa_tensor = next((pa_inputs_by_pos[n] for n in pa_names if n in pa_inputs_by_pos), None)
         if pa_tensor is not None:
             call_kwargs[inp] = pa_tensor
         else:
@@ -145,6 +146,7 @@ def infer_with_pa(
         if _bound is None or len(_bound) != len(_ports):
             _bound = [[0, None] for _ in range(len(_ports))]
             _fastinfer_bound_ids[_req_key] = _bound
+        _wrapped: dict[tuple[int, bool], Any] = {}  # one ov.Tensor per value: PA layers share their metadata arrays
         for _pi_idx, _port in enumerate(_ports):
             _val = call_kwargs.get(_port)
             if _val is None:
@@ -155,11 +157,15 @@ def infer_with_pa(
                 continue  # already bound; ov.Tensor wrapper kept alive
             if isinstance(_val, _ov.Tensor):
                 _t = _val
-            elif _port.get_element_type() == _ov.Type.bf16 and getattr(_val, "dtype", None) == np.float16:
-                # bf16 arrives as float16 bits; wrap them with the port's type, or set_tensor rejects f16.
-                _t = _ov.Tensor(_val, _val.shape, _ov.Type.bf16)
             else:
-                _t = _ov.Tensor(_val, shared_memory=True)
+                # bf16 arrives as float16 bits; wrap them with the port's type, or set_tensor rejects f16.
+                _as_bf16 = (_port.get_element_type() == _ov.Type.bf16
+                            and getattr(_val, "dtype", None) == np.float16)
+                _t = _wrapped.get((_val_id, _as_bf16))
+                if _t is None:
+                    _t = (_ov.Tensor(_val, _val.shape, _ov.Type.bf16) if _as_bf16
+                          else _ov.Tensor(_val, shared_memory=True))
+                    _wrapped[(_val_id, _as_bf16)] = _t
             req.set_tensor(_port, _t)
             _slot[0] = _val_id
             _slot[1] = _t  # keep alive
