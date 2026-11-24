@@ -244,10 +244,7 @@ def _define_loader() -> type[Any]:
                         if zp is not None:
                             # int4 zero points are packed; unpacked, they concatenate like `scale`.
                             zp = _unpack_uint4(zp) if bits == 4 else zp
-                            # quantization.py stores the zero point
-                            # unpacked so it concatenates like `scale`.
-                            yield (f"{module}.zero_point",
-                                   _unpack_uint4(zp).reshape(out_features, groups))
+                            yield f"{module}.zero_point", zp.reshape(out_features, -1)
                     elif (scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES)
                           and (zp is None or scale.shape[1] % 2 == 0)):
                         # Left packed, and the dense weight unloaded; see

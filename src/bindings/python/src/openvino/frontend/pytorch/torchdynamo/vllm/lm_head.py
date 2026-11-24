@@ -169,7 +169,7 @@ def _int4_weight(int4, et):
     return op.reshape(weight, op.constant(np.array([vocab, hidden], dtype=np.int64)), False)
 
 
-def build_ov_lm_head(weight, nthreads=int | None = None, device="CPU", int8=None, int4=None,
+def build_ov_lm_head(weight, nthreads: int | None = None, device="CPU", int8=None, int4=None,
 ) -> "Callable[[torch.Tensor, torch.Tensor, torch.Tensor | None], torch.Tensor] | None":
     """Compile ``[M, H] x [H, V]`` on OV as a cpu_linear-shaped callable; None makes the caller use oneDNN."""
     import numpy as np
@@ -204,13 +204,13 @@ def build_ov_lm_head(weight, nthreads=int | None = None, device="CPU", int8=None
             w = op.convert(w, io_et)
 
     # transpose_b: vLLM stores lm_head as [vocab, hidden], and this avoids copying it.
-    param = op.parameter([-1, hidden_size], et, name="x")
-    model = ov.Model([op.result(op.matmul(param, op.constant(wt), False, True))],
+    param = op.parameter([-1, hidden_size], io_et, name="x")
+    model = ov.Model([op.result(op.matmul(param, w, False, True))],
                      [param], "ov_lm_head")
 
     # The model's own dtype, not the preset's bf16 substitute, which would flip greedy argmax on near-ties.
-    cfg: dict[str, Any] = {"INFERENCE_PRECISION_HINT": et.get_type_name()}
-    if nthreads and on_cpu::
+    cfg: dict[str, Any] = {"INFERENCE_PRECISION_HINT": compute_et.get_type_name()}
+    if nthreads and on_cpu:
         cfg["INFERENCE_NUM_THREADS"] = nthreads
     compiled = ov.Core().compile_model(model, device, cfg)
 
