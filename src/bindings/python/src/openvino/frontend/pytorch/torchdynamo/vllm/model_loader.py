@@ -262,8 +262,7 @@ def _define_loader() -> type[Any]:
         def load_weights(self, model: "torch.nn.Module", model_config: "ModelConfig") -> None:
             loaded = model.load_weights(self._weights(model, model_config))
             unloaded = _attach_int4_embeddings(model, model.__dict__.pop("_ov_nncf_int4_pending", {}))
-            # DefaultModelLoader skips this check for quantized models; here a
-            # missed key means a layout this loader does not understand.
+            # DefaultModelLoader skips this check for quantized models; here it catches unknown layouts.
             missing = {n for n, _ in model.named_parameters()} - set(loaded or ()) - unloaded
             if missing:
                 raise ValueError(

@@ -138,7 +138,8 @@ def bake_symint_constants(om: "Model", args: Sequence[Any], dyn_shapes: bool = T
                           gm: "torch.fx.GraphModule | None" = None) -> None:
     """Replace integer FX input Parameters (their upper bound of 0 collapses shapes) by ShapeOf dims or Constants.
 
-    Tensor Parameters go dynamic when dyn_shapes is set or every int came from a ShapeOf, which must not const-fold."""
+    Tensor Parameters go dynamic when dyn_shapes is set or every int came from a ShapeOf, which must not const-fold.
+    """
     import torch
     import numpy as np
     from openvino import PartialShape, opset1 as _opset1, opset8 as _opset8

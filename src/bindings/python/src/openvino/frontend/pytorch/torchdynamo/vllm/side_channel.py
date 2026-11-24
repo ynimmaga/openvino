@@ -38,7 +38,8 @@ def _ov_tensor_over_torch(tensor: torch.Tensor, param_dt: "Type", _ov: ModuleTyp
     return _ov.Tensor(npv, _ov.Shape(list(tensor.shape)), param_dt)
 
 
-_on_gpu_cache = {}  # id(compiled) -> bool
+_on_gpu_cache: dict[int, bool] = {}  # id(compiled) -> bool
+
 
 def _on_gpu(compiled) -> bool:
     key = id(compiled)
@@ -70,9 +71,7 @@ def _device_kv_tensors(num_blocks, compiled, port_names, _ov):
     return tensors
 
 
-# OV CPU PagedAttention hard-requires block_size == 32. Larger
-# multiples are reshaped to it; this is the fallback when the real KV-cache
-# layout can't be read.
+# OV CPU PagedAttention requires block_size 32; larger multiples are re-blocked to it.
 _PA_BLOCK_SIZE = 32
 
 _pa_sliding_window_cache: dict[tuple[int, str], np.ndarray] = {}  # (id(compiled), layer_name) -> np.int32 array

@@ -68,7 +68,7 @@ def test_openvino_matches_eager_greedy(monkeypatch):
         kv_cache_memory_bytes=KV_CACHE_BYTES,
     )
     try:
-        eager_text = _run(eager_llm, PROMPT, MAX_NEW_TOKENS, SKIP_WARMUP_TOKENS)
+        eager_text = _run(eager_llm)
         eager_wait_policy = eager_llm.collective_rpc(_worker_omp_wait_policy)
     finally:
         del eager_llm

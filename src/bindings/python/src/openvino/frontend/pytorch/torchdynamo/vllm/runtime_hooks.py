@@ -22,8 +22,8 @@ _fastinfer_out_static = {}  # id(compiled) -> bool: output views are reusable
 _device_bound = {}          # id(req) -> {port name: RemoteTensor set on it}
 
 
-def clear_caches():
-    """Drop the fast-infer caches. Their keys are id(compiled)/id(req), reused once those are freed."""
+def clear_caches() -> None:
+    """Drop the fast-infer caches: their id() keys are reused once the objects are freed."""
     for cache in (_fastinfer_port_cache, _fastinfer_bound_ids, _fastinfer_out_cache, _fastinfer_out_static,
                   _device_bound):
         cache.clear()
@@ -49,7 +49,7 @@ def _bind_device_tensors(req, call_kwargs):
     return host
 
 
-# Sentinel returned by run_pa_infer to signal "skip this infer; use eager".
+# Returned by run_pa_infer: skip this infer and run eager.
 class _PaSkip:
     __slots__ = ()
 

@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-"""Run lm_head through OV instead of oneDNN (OV_LM_HEAD=1).
+"""Run lm_head through OV instead of oneDNN (OV_LM_HEAD).
 
-Off by default: a second live InferRequest slows the main graph more than the OMP_NUM_THREADS tuning it saves.
+Off by default on CPU: a second live InferRequest slows the main graph more than the OMP_NUM_THREADS tuning it saves.
+On by default on GPU, where the alternative is a CPU GEMM between two GPU steps; an NNCF int8 or int4 weight is
+compiled compressed.
 """
 
 import logging
@@ -47,6 +49,7 @@ def _copy_into(ov_tensor: "Tensor", tensor: "torch.Tensor") -> None:
     else:
         dst[:] = src.numpy()
 
+
 def _int8_weight(int8, et):
     """Dense-shaped [V, H] lm_head weight from NNCF per-row int8, as a graph.
 
@@ -54,7 +57,6 @@ def _int8_weight(int8, et):
     device plugins recognize as a compressed FC, so the weight stays int8 in
     device memory instead of being folded to `et`.
     """
-    import openvino as ov
     import openvino.opset13 as op
 
     stored, scale, zero_point = int8
@@ -108,68 +110,10 @@ def _int4_weight(int4, et):
     return op.reshape(weight, op.constant(np.array([vocab, hidden], dtype=np.int64)), False)
 
 
-def _int8_weight(int8, et):
-    """Dense-shaped [V, H] lm_head weight from NNCF per-row int8, as a graph.
-
-    The u8 Constant -> Convert -> Subtract -> Multiply chain is the pattern the
-    device plugins recognize as a compressed FC, so the weight stays int8 in
-    device memory instead of being folded to `et`.
-    """
-    import openvino as ov
-    import openvino.opset13 as op
-
-    stored, scale, zero_point = int8
-    weight = op.convert(op.constant(stored.contiguous().numpy()), et)
-    if zero_point is not None:
-        weight = op.subtract(
-            weight, op.convert(op.constant(zero_point.contiguous().numpy()), et))
-    scale = op.constant(scale.contiguous().numpy())
-    if scale.get_element_type() != et:
-        scale = op.convert(scale, et)
-    return op.multiply(weight, scale)
-
-
-def _u4_constant(packed, shape):
-    """u4 Constant from NNCF-packed nibbles (low first), which is also OV's u4 layout."""
-    import numpy as np
-    import openvino as ov
-    import openvino.opset13 as op
-
-    tensor = ov.Tensor(ov.Type.u4, shape)
-    np.asarray(tensor.data).reshape(-1)[:] = packed.contiguous().reshape(-1).numpy()
-    return op.constant(tensor)
-
-
-def _int4_weight(int4, et):
-    """Dense-shaped [V, H] lm_head weight from an NNCF grouped int4 table, as a graph.
-
-    `int4` is the tied embedding's `(stored u8 [V, H/2] packed, scale
-    [V, groups, 1], zero_point u8 [V, groups/2] packed or None)`. u4 Constant
-    -> Convert -> Subtract -> Multiply -> Reshape is the grouped compressed-FC
-    pattern the device plugins keep int4 in device memory.
-    """
-    import numpy as np
-    import openvino.opset13 as op
-    import torch
-
-    stored, scale, zero_point = int4
-    vocab, groups = scale.shape[0], scale.shape[1]
-    hidden = stored.shape[1] * 2
-    weight = op.convert(_u4_constant(stored, [vocab, groups, hidden // groups]), et)
-    if zero_point is None:
-        # Symmetric nibbles carry a +8 bias to stay unsigned (model_loader._dequantize).
-        zp = _u4_constant(torch.tensor([8], dtype=torch.uint8), [1])
-    else:
-        zp = _u4_constant(zero_point, [vocab, groups, 1])
-    weight = op.subtract(weight, op.convert(zp, et))
-    scale = op.constant(scale.contiguous().numpy())
-    if scale.get_element_type() != et:
-        scale = op.convert(scale, et)
-    weight = op.multiply(weight, scale)
-    return op.reshape(weight, op.constant(np.array([vocab, hidden], dtype=np.int64)), False)
-
-
-def build_ov_lm_head(weight, nthreads: int | None = None, device="CPU", int8=None, int4=None,
+def build_ov_lm_head(
+    weight: "torch.Tensor", nthreads: int | None = None, device: str = "CPU",
+    int8: "tuple[torch.Tensor, torch.Tensor, torch.Tensor | None] | None" = None,
+    int4: "tuple[torch.Tensor, torch.Tensor, torch.Tensor | None] | None" = None,
 ) -> "Callable[[torch.Tensor, torch.Tensor, torch.Tensor | None], torch.Tensor] | None":
     """Compile ``[M, H] x [H, V]`` on OV as a cpu_linear-shaped callable; None makes the caller use oneDNN."""
     import numpy as np
