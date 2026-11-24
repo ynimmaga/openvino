@@ -90,6 +90,12 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
     )
     from vllm.model_executor.utils import set_weight_attrs
 
+    # Resolved here, not in the traced forward: a caught ImportError there makes dynamo break the graph.
+    try:  # vLLM > 0.26 moved it (vllm#50133); 0.26 has the module but not the function.
+        from vllm.model_executor.layers.fused_moe.experts.cpu_moe import select_experts
+    except ImportError:
+        from vllm.model_executor.layers.fused_moe.cpu_fused_moe import select_experts
+
     @register_quantization_config("nncf")
     class NNCFConfig(QuantizationConfig):
         """Weight-only integer compression, as written by NNCF."""
@@ -160,10 +166,19 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
                 if self._is_quantized(prefix):
                     return NNCFLinearMethod(self)
                 return UnquantizedLinearMethod()
-            # Experts are listed by their FusedMoE module (`...mlp.experts`); None leaves them dense.
-            if isinstance(layer, RoutedExperts) and self._is_quantized(prefix):
+            # Only grouped int4 asym has a compressed MoE path; None leaves the experts dense.
+            if (isinstance(layer, RoutedExperts) and self.bits == 4 and not self.sym and self.group_size > 0
+                    and self._experts_are_quantized(layer, prefix)):
                 return NNCFFusedMoEMethod(self, layer.moe_config)
             return None
+
+        def _experts_are_quantized(self, layer: RoutedExperts, prefix: str) -> bool:
+            """Are the routed experts at `prefix` compressed: listed whole (fused 3D) or every per-expert projection?"""
+            if self._is_quantized(prefix):
+                return True
+            projections = (layer.ckpt_gate_proj_name, layer.ckpt_up_proj_name, layer.ckpt_down_proj_name)
+            return all(f"{prefix}.{expert}.{projection}" in self.quantized_modules
+                       for expert in range(layer.moe_config.num_logical_experts) for projection in projections)
 
     class NNCFLinearMethod(LinearMethodBase):
         """Declares the compressed parameters, then decodes them per forward."""
@@ -259,8 +274,6 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
                            intermediate_size_per_partition: int, params_dtype: torch.dtype,
                            **extra_weight_attrs: Any) -> None:
             config = self.quant_config
-            if config.bits != 4 or config.sym or config.group_size <= 0:
-                raise ValueError(f"[OV plugin] nncf MoE experts need grouped int4 asym, got {config}")
             if layer.activation.value not in ("silu", "gelu", "gelu_tanh"):
                 raise ValueError(f"[OV plugin] nncf MoE experts: activation {layer.activation} is not supported")
             if layer.apply_router_weight_on_input:
@@ -298,10 +311,8 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
         def get_fused_moe_quant_config(self, layer: torch.nn.Module) -> None:
             return None
 
-        def apply_monolithic(self, layer: torch.nn.Module, x: torch.Tensor, router_logits: torch.Tensor,
-                             input_ids: torch.Tensor | None = None) -> torch.Tensor:
-            from vllm.model_executor.layers.fused_moe.cpu_fused_moe import select_experts
-
+        def apply_monolithic(self, layer: torch.nn.Module, x: torch.Tensor,  # noqa: VNE001 (vLLM passes x=)
+                             router_logits: torch.Tensor, input_ids: torch.Tensor | None = None) -> torch.Tensor:
             from openvino.frontend.pytorch.torchdynamo.vllm.fused_moe import nncf_moe_forward
 
             topk_weights, topk_ids = select_experts(

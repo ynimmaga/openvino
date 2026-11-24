@@ -55,6 +55,9 @@ def _dequantize(stored: "torch.Tensor", scale: "torch.Tensor", zero_point: "torc
 
 def _pt2_state_dict(path: str) -> "dict[str, torch.Tensor]":
     """Weights of a `torch.export.save` archive, read without its graph (pytree can't rebuild HF ModelOutputs)."""
+    import io
+
+    import torch
     from torch.export.pt2_archive._package import PT2ArchiveReader, _load_state_dict
 
     state: "dict[str, torch.Tensor]" = {}
@@ -64,7 +67,8 @@ def _pt2_state_dict(path: str) -> "dict[str, torch.Tensor]":
                 if entry.startswith("models/") and entry.endswith(".json"):
                     weights = _load_state_dict(archive, entry.removeprefix("models/").removesuffix(".json"))
                     if isinstance(weights, bytes):
-                        raise ValueError("legacy pickled weights; re-save with torch.export.save")
+                        # Legacy archives pickle the whole state_dict; weights_only refuses non-tensor objects.
+                        weights = torch.load(io.BytesIO(weights), weights_only=True)
                     state.update(weights)
     except Exception as exc:
         raise ValueError(f"[OV plugin] {LOAD_FORMAT}: cannot read weights from {path}: {exc}") from exc
@@ -109,11 +113,17 @@ def _define_loader() -> type[Any]:
             return f"{parent}.{leaf}.qweight" in params
 
         def _experts_are_quantized(self, model: "torch.nn.Module", params: "dict[str, torch.nn.Parameter]",
-                                   module: str) -> bool:
-            """Was the FusedMoE that `...experts.gate_up_proj` / `...experts.down_proj` loads into built int4?"""
-            experts = self._to_vllm(model, module.rpartition(".")[0])
-            return experts is not None and any(
-                f"{experts}{routed}.w13_qweight" in params for routed in ("", ".routed_experts"))
+                                   experts: str) -> bool:
+            """Was the FusedMoE that HF module `experts` (`...mlp.experts`) loads into built int4?"""
+            vllm_experts = self._to_vllm(model, experts)
+            return vllm_experts is not None and any(
+                f"{vllm_experts}{routed}.w13_qweight" in params for routed in ("", ".routed_experts"))
+
+        def _expert_is_quantized(self, model: "torch.nn.Module", params: "dict[str, torch.nn.Parameter]",
+                                 module: str) -> bool:
+            """Is `module` one expert's projection (`...experts.{e}.gate_proj`) of a FusedMoE built int4?"""
+            experts, expert, _ = (["", ""] + module.rsplit(".", 2))[-3:]
+            return expert.isdigit() and self._experts_are_quantized(model, params, experts)
 
         @staticmethod
         def _expert_shards(module: str, stored: "torch.Tensor", scale: "torch.Tensor",
@@ -218,10 +228,12 @@ def _define_loader() -> type[Any]:
                     zp = get_tensor(zp_key) if zp_key in keys else None
                     module = name.removesuffix(".weight")
 
-                    if scale.dim() == 4 and self._experts_are_quantized(model, params, module):
+                    if scale.dim() == 4 and self._experts_are_quantized(model, params, module.rpartition(".")[0]):
                         yield from self._expert_shards(module, stored, scale, zp)
-                    elif self._target_is_quantized(model, params, module):
+                    elif (self._target_is_quantized(model, params, module)
+                          or self._expert_is_quantized(model, params, module)):
                         # Already row-major over (out, in) or (out, in/2), so the reshapes are free.
+                        # A per-expert projection lands in FusedMoE's w13_*/w2_* through its expert mapping.
                         out_features = scale.shape[0]
                         yield f"{module}.qweight", stored.reshape(out_features, -1)
                         yield f"{module}.scale", scale.reshape(out_features, -1)
