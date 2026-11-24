@@ -111,12 +111,10 @@ def _activation(gate: "torch.Tensor", act: str) -> "torch.Tensor":
 
 def nncf_moe_forward(tokens: "torch.Tensor", weights: "list[list[torch.Tensor]]", topk_weights: "torch.Tensor",
                      topk_ids: "torch.Tensor", act: str,
-                     dequantize: "Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]") -> "torch.Tensor":
-    """MoE over NNCF-compressed experts; `weights` is [qweight, scale, zero_point] for w1 (gate), w3 (up), w2.
-
-    Traced, it is moe_tiled over the decompression chains, which the CPU plugin folds into GatherMatmulCompressed.
-    Eager, only the routed experts are decompressed.
-    """
+                     dequantize: "Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]",
+                     ) -> "torch.Tensor":
+    """Run MoE over NNCF experts, `weights` = [qweight, scale, zero_point] for w1 (gate), w3 (up), w2."""
+    # Traced: moe_tiled over the decompression chains (-> GatherMatmulCompressed). Eager: routed experts only.
     import torch
     from torch.nn import functional
     if torch.compiler.is_compiling():
@@ -126,8 +124,8 @@ def nncf_moe_forward(tokens: "torch.Tensor", weights: "list[list[torch.Tensor]]"
     for expert in topk_ids.unique().tolist():
         rows, slots = (topk_ids == expert).nonzero(as_tuple=True)
         w1, w3, w2 = (dequantize(*(t[expert] for t in w)) for w in weights)
-        x = tokens[rows]
-        down = functional.linear(_activation(functional.linear(x, w1), act) * functional.linear(x, w3), w2)
+        routed = tokens[rows]
+        down = functional.linear(_activation(functional.linear(routed, w1), act) * functional.linear(routed, w3), w2)
         out.index_add_(0, rows, down * topk_weights[rows, slots, None].to(tokens.dtype))
     return out
 

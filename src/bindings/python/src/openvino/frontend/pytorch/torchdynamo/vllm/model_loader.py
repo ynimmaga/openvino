@@ -33,10 +33,7 @@ def _hook_key(weight_name: str, field: str) -> str:
 
 def _dequantize(stored: "torch.Tensor", scale: "torch.Tensor", zero_point: "torch.Tensor | None",
                 out_dtype: "torch.dtype") -> "torch.Tensor":
-    """Dense [..., out, in] weight from any NNCF mode, computed in the scale's dtype as NNCF's decompressors do.
-
-    Grouped int4 scales are [..., out, groups, 1]; leading dims are fused MoE experts (3D `experts.gate_up_proj`).
-    """
+    """Dense [..., out, in] weight from any NNCF mode, in the scale's dtype; leading dims are fused MoE experts."""
     if scale.dim() >= 3:
         rows = scale.shape[:-2]
         weight = _unpack_uint4(stored).reshape(*scale.shape[:-1], -1)
@@ -57,20 +54,15 @@ def _dequantize(stored: "torch.Tensor", scale: "torch.Tensor", zero_point: "torc
 
 
 def _pt2_state_dict(path: str) -> "dict[str, torch.Tensor]":
-    """Persistent parameters and buffers of a `torch.export.save` archive, read without rebuilding its graph.
-
-    `torch.export.load` would deserialize the program too, which fails on output types pytree cannot rebuild
-    (HF's `MoeCausalLMOutputWithPast` when Qwen2-MoE cannot be exported with return_dict=False); only the
-    weights are used here.
-    """
+    """Weights of a `torch.export.save` archive, read without its graph (pytree can't rebuild HF ModelOutputs)."""
     from torch.export.pt2_archive._package import PT2ArchiveReader, _load_state_dict
 
     state: "dict[str, torch.Tensor]" = {}
     try:
         with PT2ArchiveReader(path) as archive:
-            for file in archive.get_file_names():
-                if file.startswith("models/") and file.endswith(".json"):
-                    weights = _load_state_dict(archive, file.removeprefix("models/").removesuffix(".json"))
+            for entry in archive.get_file_names():
+                if entry.startswith("models/") and entry.endswith(".json"):
+                    weights = _load_state_dict(archive, entry.removeprefix("models/").removesuffix(".json"))
                     if isinstance(weights, bytes):
                         raise ValueError("legacy pickled weights; re-save with torch.export.save")
                     state.update(weights)
@@ -126,11 +118,8 @@ def _define_loader() -> type[Any]:
         @staticmethod
         def _expert_shards(module: str, stored: "torch.Tensor", scale: "torch.Tensor",
                            zero_point: "torch.Tensor | None") -> "Iterator[tuple[str, torch.Tensor]]":
-            """Per-expert 2D `experts.{e}.{gate,up,down}_proj.{qweight,scale,zero_point}` from NNCF's fused 3D layout.
-
-            2D, so FusedMoE's per-expert mapping takes them; a 3D tensor would hit its fused-checkpoint path,
-            which reads the packed in/2 dim as a transposed hidden dim. Scales are [experts, out, groups, 1].
-            """
+            """Per-expert 2D `experts.{e}.{gate,up,down}_proj.*` from NNCF's fused 3D experts layout."""
+            # 2D: FusedMoE's fused 3D path would misread the packed in/2 dim as a transposed hidden dim.
             if zero_point is None:
                 raise ValueError(f"[OV plugin] {LOAD_FORMAT}: {module} is symmetric; MoE experts need int4 asym")
             experts, out_features, groups = scale.shape[:3]
@@ -251,9 +240,8 @@ def _define_loader() -> type[Any]:
             # MoERunner reports `experts.w13_weight`; the parameter is `experts.routed_experts.w13_weight`.
             # vLLM's remap knows a fixed suffix list, which lacks NNCF's `w13_zero_point`.
             loaded = {maybe_remap_moe_expert_param_name(n, params) for n in loaded or ()}
-            loaded |= {routed for n in loaded if n not in params
-                       and (routed := n.replace(".experts.", ".experts.routed_experts.", 1)) in params}
-            missing = set(params) - loaded
+            routed = {n.replace(".experts.", ".experts.routed_experts.", 1) for n in loaded - params.keys()}
+            missing = set(params) - loaded - routed
             if missing:
                 raise ValueError(
                     f"[OV plugin] {LOAD_FORMAT}: not initialized from "

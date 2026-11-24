@@ -47,13 +47,8 @@ def _unpack_int4(packed: "torch.Tensor") -> "torch.Tensor":
 
 def _dequantize(qweight: "torch.Tensor", scale: "torch.Tensor", bits: int, out_dtype: "torch.dtype",
                 zero_point: "torch.Tensor | None" = None) -> "torch.Tensor":
-    """Decompress to a dense [..., out, in] weight, in NNCF's order but computed in `out_dtype`.
-
-    Leading dims are MoE experts. scale and zero_point are [..., out, groups], or [..., out, groups, 1] already
-    broadcastable: OV only marks the chain as decompression, and keeps it compressed into a (Gather)MatMul, when
-    they reach the Subtract/Multiply as constants, not through an Unsqueeze.
-    """
-    rows = qweight.shape[:-1]
+    """Decompress to a dense [out, in] weight, in NNCF's order but computed in `out_dtype`."""
+    out_features = qweight.shape[0]
     if bits == 4:
         in_features = qweight.shape[-1] * 2
         weight = (_unpack_int4(qweight) if zero_point is None
@@ -66,14 +61,12 @@ def _dequantize(qweight: "torch.Tensor", scale: "torch.Tensor", bits: int, out_d
     expand = scale.dim() == qweight.dim()
     groups = scale.shape[-1 if expand else -2]
     weight = weight.reshape(*rows, groups, in_features // groups)
-    # No trailing cast: a chain that ends in `out_dtype` is the decompression pattern the plugins recognize.
-    weight = weight.type(out_dtype)
+    weight = weight.type(scale.dtype)
     if zero_point is not None:
-        zero_point = zero_point.type(out_dtype)
+        zero_point = zero_point.type(scale.dtype)
         weight = weight - (zero_point.unsqueeze(-1) if expand else zero_point)
-    scale = scale.type(out_dtype)
     weight = weight * (scale.unsqueeze(-1) if expand else scale)
-    return weight.reshape(*rows, in_features)
+    return weight.reshape(*rows, in_features).type(out_dtype)
 
 
 def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
