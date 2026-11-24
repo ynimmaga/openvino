@@ -112,6 +112,26 @@ def symint_shape_sources(gm: "torch.fx.GraphModule | None", args: Sequence[Any])
         return {}
 
 
+def symbolic_tensor_dims(gm: "torch.fx.GraphModule | None", args: Sequence[Any]) -> dict[int, set[int]]:
+    """{tensor_arg_index: dims dynamo traced symbolically}, read off meta['val'].
+
+    Empty when gm is None, placeholders don't match args, or the trace is static."""
+    if gm is None:
+        return {}
+    import torch
+    placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
+    if len(placeholders) != len(args):
+        return {}
+    dims: dict[int, set[int]] = {}
+    for idx, node in enumerate(placeholders):
+        meta_val = node.meta.get("val", None)
+        if isinstance(args[idx], torch.Tensor) and isinstance(meta_val, torch.Tensor):
+            symbolic = {d for d, extent in enumerate(meta_val.shape) if isinstance(extent, torch.SymInt)}
+            if symbolic:
+                dims[idx] = symbolic
+    return dims
+
+
 def bake_symint_constants(om: "Model", args: Sequence[Any], dyn_shapes: bool = True,
                           gm: "torch.fx.GraphModule | None" = None) -> None:
     """Replace integer FX input Parameters (their upper bound of 0 collapses shapes) by ShapeOf dims or Constants.
@@ -170,6 +190,7 @@ def bake_symint_constants(om: "Model", args: Sequence[Any], dyn_shapes: bool = T
     for param in params_to_remove:
         om.remove_parameter(param)
 
+    symbolic_dims = symbolic_tensor_dims(gm, args) if n_int_args == 0 else {}
     all_symints_sourced = n_int_args > 0 and len(sources) == n_int_args
     if all_symints_sourced and not dyn_shapes:
         logger.debug("symint inputs sourced from ShapeOf; forcing dynamic input shapes")
@@ -190,6 +211,9 @@ def bake_symint_constants(om: "Model", args: Sequence[Any], dyn_shapes: bool = T
             om_input.get_node().set_partial_shape(PartialShape(list(input_data.size())))
         elif dyn:
             om_input.get_node().set_partial_shape(PartialShape([-1] * input_data.ndim))
+        elif idx in symbolic_dims:
+            om_input.get_node().set_partial_shape(PartialShape(
+                [-1 if d in symbolic_dims[idx] else size for d, size in enumerate(input_data.size())]))
         else:
             om_input.get_node().set_partial_shape(PartialShape(list(input_data.size())))
 

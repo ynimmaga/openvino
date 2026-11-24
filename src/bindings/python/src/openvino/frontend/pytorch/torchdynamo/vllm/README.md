@@ -271,12 +271,21 @@ Set these before running your script. The plugin's `register()` fills in
 also sizes the KV cache to 4 GiB unless `VLLM_CPU_KVCACHE_SPACE` or
 `kv_cache_memory_bytes` is set; other vLLM runs keep vLLM's defaults.
 
+The plugin sets `OMP_WAIT_POLICY=PASSIVE` only for the worker processes vLLM
+spawns. With `VLLM_ENABLE_V1_MULTIPROCESSING=0` the engine runs in the calling
+process, whose libgomp has read its environment by the time vLLM loads the
+plugin, so set `OMP_WAIT_POLICY=PASSIVE` yourself before the first `torch` or
+`openvino` import (the plugin warns when it is missing). Running in-process
+saves the `EngineCore` and worker processes' own copies of torch and vLLM,
+about 1.3 GiB on Llama-3.2-1B.
+
 ### OV plugin — fast paths
 
 | Variable | Default | Effect |
 |---|---|---|
 | `OV_LAZY_KVCACHE` | `0` | When `1`, allocate the KV-cache pool with `torch.empty` instead of vLLM's default `torch.zeros`, so pages commit as blocks are actually written instead of all at once at startup. Saves ~`VLLM_CPU_KVCACHE_SPACE` GiB of RSS (the whole configured pool, since `torch.zeros` on CPU eagerly memsets every page). Safe because PagedAttention always writes a block before reading it. Verified byte-identical output (batching, prefix caching, block churn, long sequences, float32) plus the full test suite, both with this on and off. Opt-in since it patches vLLM's own `GPUModelRunner._allocate_kv_cache_tensors`, not something owned by this plugin. |
 | `OV_LM_HEAD` | `0` | When `1`, compile `lm_head` on OV instead of leaving it on torch/oneDNN. `lm_head` runs outside the compiled graph (vLLM calls `compute_logits()` separately), so on torch it is governed by `OMP_NUM_THREADS`, and at 1–2 threads it costs far more than it needs to; on OV that dependency disappears. Off by default anyway: the OV path adds a second compiled model whose InferRequest is invoked between main-graph infers, and that interleaving roughly doubles the **main graph's** per-step time — a larger loss than the `OMP_NUM_THREADS` mistuning it avoids. Not caused by the lm_head kernel, and not fixable by capping the second model's threads, disabling its pinning, or sharing one `ov.Core`. Enable it where `OMP_NUM_THREADS` cannot be tuned per model and per machine. |
+| `OV_DYNAMO_FULL_GUARDS` | `0` | When `0`, the plugin compiles the model's forward with a dynamo `guard_filter_fn` that drops every guard rooted at `self` (weights, submodules, config attributes) and keeps the guards on the forward's inputs and on globals. The weights are baked into the OV model as constants, so those guards can't change which graph runs, but dynamo re-checks them before every step: dropping them cut dynamo's per-step overhead from 2.0 to 0.4 ms on Gemma-4-E2B (14849 -> 1515 guards) and ~0.25 ms on Llama-3.2-1B (4007 -> 250). A change of input rank or dtype still recompiles. Set `1` to keep the full guard set. |
 | `OV_FAST_INFER` | `1` (set by plugin) | Bypass the `_data_dispatch` dict walk in `req.infer()`; use `set_tensor(port, ...)` directly and cache the `ov.Tensor` wrappers and output views per `id(InferRequest)`. Falls back to the slow path on any error. Set `0` to disable. |
 | `OV_NATIVE_SAMPLER` | `0` | When `1`, use a native OV opset13 graph for sampling (topk + softmax + Gumbel-max), bypassing the `torch.compile(backend="openvino")` layer. Trade-off: skips top_p rejection (pure Gumbel-max over top-k values). No effect on greedy. |
 | `OV_FUSED_SAMPLER_MIN_VOCAB` | `100000` | Vocab-size gate for the fused / native samplers. Below this threshold torch's `apply_top_k_top_p` on CPU beats round-tripping through a compiled OV graph. Set `0` to enable for all vocab sizes. |
