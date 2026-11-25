@@ -48,23 +48,164 @@ def _find_lm_head(model: "torch.nn.Module") -> "torch.nn.Module | None":
     return lm_head
 
 
+def _model_device(model: Any) -> str:
+    """The OV device the model's forward is compiled for."""
+    return str((getattr(model, "_ov_compile_options", None) or {}).get("device", "CPU"))
+
+
+def _int8_lm_head_source(model: Any, weight: "torch.Tensor") -> "tuple[Any, Any, Any] | None":
+    """The stashed int8 tensors `weight` was decompressed from, or None; pops the stash.
+
+    Matched on content, not name: a tied lm_head has no checkpoint entry of its own.
+    """
+    stash = getattr(model, "_ov_nncf_int8_weights", None) or {}
+    model._ov_nncf_int8_weights = {}
+    return _match_int8(stash, weight)
+
+
+def _match_int8(stash: "dict[str, tuple[Any, Any, Any]]", weight: "torch.Tensor") -> "tuple[Any, Any, Any] | None":
+    """The stashed (stored, scale, zero_point) that decompresses to `weight`, or None."""
+    import torch
+    from openvino.frontend.pytorch.torchdynamo.vllm.model_loader import _dequantize
+
+    rows = torch.linspace(0, weight.shape[0] - 1, 16).long()
+    for stored, scale, zero_point in stash.values():
+        if tuple(stored.shape) != tuple(weight.shape):
+            continue
+        dense = _dequantize(stored[rows], scale[rows],
+                            None if zero_point is None else zero_point[rows], weight.dtype)
+        if torch.equal(dense, weight[rows]):
+            return stored, scale, zero_point
+    return None
+
+
+class _CompressedEmbeddingMethod:
+    """Embedding lookup from the checkpoint's int8 (per-row) or int4 (grouped) table.
+
+    Dequantizes only the gathered rows, bit-identical to a dense lookup; OV keeps the table as u8.
+    """
+
+    def __init__(self, base: Any) -> None:
+        self.base = base
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.base, name)
+
+    def embedding(self, layer: "torch.nn.Module", input_: "torch.Tensor") -> "torch.Tensor":
+        import torch
+        import torch.nn.functional as F
+        scale = F.embedding(input_, layer._ov_q_scale)
+        rows = F.embedding(input_, layer._ov_q_weight)
+        zero_point = layer._ov_q_zero_point
+        if layer._ov_q_bits == 4:
+            # Packed nibbles, low first, grouped: scale [V, groups], as in _dequantize.
+            groups = scale.shape[-1]
+            rows = torch.stack((rows & 15, rows >> 4), dim=-1).reshape(*input_.shape, groups, -1)
+            rows = rows.type(scale.dtype)
+            if zero_point is None:
+                # Symmetric nibbles carry a +8 bias to stay unsigned.
+                rows = rows - 8
+            else:
+                zp = F.embedding(input_, zero_point)
+                zp = torch.stack((zp & 15, zp >> 4), dim=-1).reshape(*input_.shape, groups, 1)
+                rows = rows - zp.type(scale.dtype)
+            rows = (rows * scale.unsqueeze(-1)).reshape(*input_.shape, -1)
+        else:
+            rows = rows.type(scale.dtype)
+            if zero_point is not None:
+                rows = rows - F.embedding(input_, zero_point).type(scale.dtype)
+            rows = rows * scale
+        # Not layer.weight.dtype: reading the dense weight would pull it into the graph.
+        return rows.type(layer._ov_q_out_dtype)
+
+
+def _set_embedding_table(module: "torch.nn.Module", base: Any, bits: "int | None", stored: Any = None,
+                         scale: Any = None, zero_point: Any = None) -> None:
+    """Point `module` at a compressed table, or back at its dense weight if `bits` is None."""
+    module.register_buffer("_ov_q_weight", stored, persistent=False)
+    module.register_buffer("_ov_q_scale", scale, persistent=False)
+    module.register_buffer("_ov_q_zero_point", zero_point, persistent=False)
+    module._ov_q_bits = bits
+    module._ov_q_out_dtype = module.weight.dtype
+    module.quant_method = base if bits is None else _CompressedEmbeddingMethod(base)
+
+
+def _install_compressed_embeddings(model: Any) -> None:
+    """Point each input embedding at its compressed checkpoint table; runs before _install_ov_lm_head.
+
+    int4 (dense weight never loaded) always; int8 while it matches the live weight, by default on GPU only.
+    """
+    try:
+        import torch
+        from vllm.model_executor.layers.vocab_parallel_embedding import (
+            ParallelLMHead, VocabParallelEmbedding)
+    except Exception as _e:
+        logger.debug("[OV plugin] compressed embedding skipped: %s", _e)
+        return
+    if not isinstance(model, torch.nn.Module):
+        return
+    int8_enabled = os.environ.get(
+        "OV_INT8_EMBEDDING", "0" if _model_device(model).startswith("CPU") else "1") != "0"
+    stash = getattr(model, "_ov_nncf_int8_weights", None) or {}
+    for module in model.modules():
+        if not isinstance(module, VocabParallelEmbedding) or isinstance(module, ParallelLMHead) \
+                or getattr(module, "tp_size", 1) > 1:
+            continue
+        base = getattr(module.quant_method, "base", module.quant_method)
+        int4 = getattr(module, "_ov_nncf_int4", None)
+        if int4 is not None:
+            stored, scale, zero_point = int4
+            _set_embedding_table(module, base, 4, stored, scale.reshape(scale.shape[0], -1), zero_point)
+            logger.info("[OV plugin] embedding %s looks up its int4 checkpoint table",
+                        tuple(module.weight.shape))
+            continue
+        int8 = _match_int8(stash, module.weight) if int8_enabled and not module.weight.is_meta else None
+        if int8 is None:
+            _set_embedding_table(module, base, None)
+            continue
+        _set_embedding_table(module, base, 8, *int8)
+        logger.info("[OV plugin] embedding %s looks up its int8 checkpoint table",
+                    tuple(module.weight.shape))
+
+
+def _int4_embedding_of(model: Any, weight: "torch.Tensor") -> "tuple[Any, Any, Any] | None":
+    """The packed int4 table of the embedding whose (tied) weight is `weight`, or None."""
+    if not hasattr(model, "modules"):
+        return None
+    for module in model.modules():
+        if getattr(module, "weight", None) is weight and getattr(module, "_ov_nncf_int4", None) is not None:
+            return module._ov_nncf_int4
+    return None
+
+
 def _install_ov_lm_head(model: "torch.nn.Module") -> None:
-    """(Re)build `lm_head.cpu_linear` from the current weight: oneDNN by default, OV with OV_LM_HEAD=1."""
+    """(Re)build `lm_head.cpu_linear` from the current weight: OV by default on GPU, oneDNN on CPU (OV_LM_HEAD)."""
+    int4 = None
+    fn = None
     try:
         import vllm._custom_ops as _ops
         from vllm.model_executor.layers.utils import dispatch_cpu_unquantized_gemm
         from openvino.frontend.pytorch.torchdynamo.vllm.lm_head import build_ov_lm_head
         lm_head = _find_lm_head(model)
         if lm_head is not None and hasattr(lm_head, "weight") and not lm_head.weight.is_meta:
-            fn = None
-            if os.environ.get("OV_LM_HEAD", "0") != "0":
+            device = _model_device(model)
+            int4 = _int4_embedding_of(model, lm_head.weight)
+            on_ov = os.environ.get("OV_LM_HEAD", "0" if device.startswith("CPU") else "1") != "0"
+            if int4 is not None and not on_ov:
+                logger.warning("[OV plugin] lm_head is tied to an int4 embedding with no dense "
+                               "weight, so it runs on OV despite OV_LM_HEAD=0")
+            if on_ov or int4 is not None:
                 try:
-                    fn = build_ov_lm_head(lm_head.weight.data)
+                    fn = build_ov_lm_head(
+                        lm_head.weight.data, device=device, int4=int4,
+                        int8=None if int4 is not None else _int8_lm_head_source(model, lm_head.weight.data))
                 except Exception as _e:
                     logger.warning("[OV plugin] lm_head OV compile failed: %s", _e)
+            # Unread on the oneDNN path; drop the ~V*H bytes it holds.
+            model._ov_nncf_int8_weights = {}
             if fn is not None:
                 lm_head.cpu_linear = fn
-            else:
+            elif int4 is None:
                 _saved = getattr(_ops, "_supports_onednn", True)
                 _ops._supports_onednn = True
                 try:
@@ -76,7 +217,12 @@ def _install_ov_lm_head(model: "torch.nn.Module") -> None:
                 finally:
                     _ops._supports_onednn = _saved
     except Exception as _e:
-        logger.debug("[OV plugin] lm_head fast path unavailable: %s", _e)
+        # Warning, not debug: a silent fallback here once cost ~30% GPU decode speed unnoticed.
+        logger.warning("[OV plugin] lm_head fast path unavailable: %s", _e)
+    if int4 is not None and fn is None:
+        raise RuntimeError(
+            "OpenVINO vLLM backend: lm_head is tied to an int4 embedding, which has no dense "
+            "weight, and could not be compiled int4 on OV; set OV_INT4_EMBEDDING=0 to load it dense")
 
 
 _KV_UPDATE_BACKENDS: dict[type, type] = {}
@@ -182,6 +328,7 @@ def _rebuild_ov_model(runner: Any, model: "torch.nn.Module") -> None:
         torch._dynamo.reset()
         options = dict(model._ov_compile_options, model_id=next(_next_model_id))
         _compile_ov_forward(model, options)
+    _install_compressed_embeddings(model)
     _install_ov_lm_head(model)
     if recompiled and hasattr(runner, "warming_up_model"):
         # As at load, the warmup takes dynamo's static first trace, so OV compiles only the dynamic graph.
@@ -280,6 +427,7 @@ def _patch_cpu_model_runner() -> None:
         _compile_ov_forward(self.model, options)
 
         # lm_head runs outside forward(), and disabling onednn left it on plain F.linear.
+        _install_compressed_embeddings(self.model)
         _install_ov_lm_head(self.model)
 
     CPUModelRunner.load_model = patched_load_model
@@ -325,7 +473,14 @@ def _patch_worker_update_weights() -> None:
         _orig_finish_weight_update(self, *args, **kwargs)
         model_runner = getattr(self, "model_runner", None)
         if model_runner is not None and _ov_active(model_runner):
-            _rebuild_ov_model(model_runner, model_runner.get_model())
+            model = model_runner.get_model()
+            if hasattr(model, "modules") and any(
+                    getattr(m, "_ov_nncf_int4", None) is not None for m in model.modules()):
+                # The dense table was never loaded, so a partial sync would rebuild from garbage.
+                raise RuntimeError(
+                    "OpenVINO vLLM backend: weight updates need the dense embedding, which an int4 "
+                    "embedding never loads; set OV_INT4_EMBEDDING=0 to load it")
+            _rebuild_ov_model(model_runner, model)
 
     CPUWorker.finish_weight_update = patched_finish_weight_update
     CPUWorker._ov_plugin_update_patched = True

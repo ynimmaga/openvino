@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 LOAD_FORMAT = "nncf_hooks"
 _HOOK = "__nncf_hooks.post_hooks.{0}__0.0.{1}"
 _registered: type[Any] | None = None
+# Per-row int8 weights kept in stored form: lm_head's own, and the embedding
+# (looked up as int8, and the source of a tied lm_head).
+_LM_HEAD_SOURCES = ("lm_head.weight", "embed_tokens.weight")
+# Input embeddings kept packed when stored grouped int4 (_keep_int4_embeddings).
+_INT4_EMBEDDING_SOURCES = ("embed_tokens.weight", "embed_tokens_per_layer.weight")
 
 
 def _hook_key(weight_name: str, field: str) -> str:
@@ -51,6 +56,50 @@ def _dequantize(stored: "torch.Tensor", scale: "torch.Tensor", zero_point: "torc
             weight = weight - zero_point.type(scale.dtype)
     weight = weight * scale
     return weight.reshape(out_features, -1).type(out_dtype)
+
+
+def _keep_int4_embeddings() -> bool:
+    """Keep int4 embeddings packed: only on OV runs, where the plugin can look them up."""
+    import os
+
+    if os.environ.get("OV_INT4_EMBEDDING", "1") == "0":
+        return False
+    try:
+        from vllm.config import get_current_vllm_config_or_none
+        from openvino.frontend.pytorch.torchdynamo.vllm.plugin import _ov_requested
+    except Exception:
+        return False
+    return _ov_requested(get_current_vllm_config_or_none())
+
+
+def _attach_int4_embeddings(model: "torch.nn.Module", pending: "dict[str, tuple[Any, Any, Any]]") -> set[str]:
+    """Hand each packed int4 table to the embedding of its shape; return the dense weights left unloaded.
+
+    Matched by shape, not name, since vLLM renames checkpoint weights (Gemma-4 drops `language_model.`)."""
+    from vllm.model_executor.layers.vocab_parallel_embedding import (
+        ParallelLMHead, VocabParallelEmbedding)
+
+    unloaded: set[str] = set()
+    for module_name, module in model.named_modules():
+        if not isinstance(module, VocabParallelEmbedding) or isinstance(module, ParallelLMHead):
+            continue
+        vocab, hidden = module.weight.shape
+        for name, (stored, scale, zero_point) in list(pending.items()):
+            if scale.shape[0] != vocab or stored.numel() * 2 != vocab * hidden:
+                continue
+            if getattr(module, "tp_size", 1) > 1:
+                raise ValueError(f"[OV plugin] {LOAD_FORMAT}: int4 embedding {name} "
+                                 "needs tensor parallel size 1; set OV_INT4_EMBEDDING=0")
+            groups = scale.shape[1]
+            module._ov_nncf_int4 = (
+                stored.reshape(vocab, hidden // 2), scale,
+                None if zero_point is None else zero_point.reshape(vocab, groups // 2))
+            unloaded.add(f"{module_name}.weight")
+            del pending[name]
+    if pending:
+        raise ValueError(f"[OV plugin] {LOAD_FORMAT}: no embedding of the shape of "
+                         f"int4 {sorted(pending)}; set OV_INT4_EMBEDDING=0")
+    return unloaded
 
 
 def _pt2_state_dict(path: str) -> "dict[str, torch.Tensor]":
@@ -163,6 +212,9 @@ def _define_loader() -> type[Any]:
             out_dtype = model_config.dtype
             quant_config = getattr(model_config.hf_config, "quantization_config", None) or {}
             bits = quant_config.get("bits", 4)
+            model._ov_nncf_int8_weights = {}
+            model._ov_nncf_int4_pending = {}
+            keep_int4 = _keep_int4_embeddings()
             with self._checkpoint(model_config.model) as (keys, get_tensor):
                 for name in sorted(keys):
                     if name.startswith("__nncf_hooks."):
@@ -189,14 +241,23 @@ def _define_loader() -> type[Any]:
                             # int4 zero points are packed; unpacked, they concatenate like `scale`.
                             zp = _unpack_uint4(zp) if bits == 4 else zp
                             yield f"{module}.zero_point", zp.reshape(out_features, -1)
+                    elif (scale.dim() == 3 and keep_int4 and name.endswith(_INT4_EMBEDDING_SOURCES)
+                          and (zp is None or scale.shape[1] % 2 == 0)):
+                        # Left packed, and the dense weight unloaded; see _attach_int4_embeddings.
+                        model._ov_nncf_int4_pending[name] = (stored, scale, zp)
                     else:
+                        if scale.dim() == 2 and name.endswith(_LM_HEAD_SOURCES):
+                            # Per-row int8 kept so lm_head and the embedding stay compressed; read by
+                            # _install_compressed_embeddings, dropped by _install_ov_lm_head.
+                            model._ov_nncf_int8_weights[name] = (stored, scale, zp)
                         yield name, _dequantize(stored, scale, zp, out_dtype)
                 yield from self._kv_shared_zeros(model, params, keys, out_dtype)
 
         def load_weights(self, model: "torch.nn.Module", model_config: "ModelConfig") -> None:
             loaded = model.load_weights(self._weights(model, model_config))
+            unloaded = _attach_int4_embeddings(model, model.__dict__.pop("_ov_nncf_int4_pending", {}))
             # DefaultModelLoader skips this check for quantized models; here it catches unknown layouts.
-            missing = {n for n, _ in model.named_parameters()} - set(loaded or ())
+            missing = {n for n, _ in model.named_parameters()} - set(loaded or ()) - unloaded
             if missing:
                 raise ValueError(
                     f"[OV plugin] {LOAD_FORMAT}: not initialized from "
