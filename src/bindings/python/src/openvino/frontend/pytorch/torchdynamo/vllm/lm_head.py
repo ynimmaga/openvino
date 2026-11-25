@@ -117,10 +117,13 @@ def build_ov_lm_head(
         logger.debug("[OV plugin] lm_head dtype %s not handled by OV path", weight.dtype)
         return None
     on_cpu = device.startswith("CPU")
-    # The GPU plugin has no bf16: compute in f16 and move bf16 in and out as
-    # f32, which loses nothing on either side of the conversion.
-    io_et = et if on_cpu or et != ov.Type.bf16 else ov.Type.f32
-    compute_et = et if on_cpu else ov.Type.f16
+    core = ov.Core()
+    # bf16 stays bf16 on GPUs that have it (XMX); older GPUs compute in f16 and move
+    # bf16 in and out as f32, which loses nothing on either side of the conversion.
+    gpu_bf16 = (not on_cpu and et == ov.Type.bf16
+                and "BF16" in core.get_property(device, "OPTIMIZATION_CAPABILITIES"))
+    io_et = et if on_cpu or gpu_bf16 or et != ov.Type.bf16 else ov.Type.f32
+    compute_et = et if on_cpu or gpu_bf16 else ov.Type.f16
 
     if nthreads is None:
         # The same thread pool as the main graph, which never runs concurrently; 0 lets OV decide.
@@ -147,7 +150,10 @@ def build_ov_lm_head(
     cfg: dict[str, Any] = {"INFERENCE_PRECISION_HINT": compute_et.get_type_name()}
     if nthreads and on_cpu:
         cfg["INFERENCE_NUM_THREADS"] = nthreads
-    compiled = ov.Core().compile_model(model, device, cfg)
+    if gpu_bf16 and (int8 is not None or int4 is not None):
+        # GPU builds before the bf16 dynamic_quantize fix fail on decode; it is skipped for <=64 rows anyway.
+        cfg["DYNAMIC_QUANTIZATION_GROUP_SIZE"] = 0
+    compiled = core.compile_model(model, device, cfg)
 
     req = compiled.create_infer_request()
     iport, oport = compiled.inputs[0], compiled.outputs[0]
