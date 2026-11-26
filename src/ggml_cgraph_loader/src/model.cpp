@@ -229,7 +229,15 @@ size_t GgmlModel::logits_size() const {
 }
 
 void GgmlModel::read_logits(float* out) const {
-    ggml_backend_tensor_get(m_impl->out.last, out, 0, logits_size() * sizeof(float));
+    // With a scheduler the logits may live on the CPU fallback backend; read through the one that owns them.
+    ggml_backend_t backend =
+        m_impl->sched ? ggml_backend_sched_get_tensor_backend(m_impl->sched, m_impl->out.last) : m_impl->backend;
+    if (!backend) {
+        ggml_backend_tensor_get(m_impl->out.last, out, 0, logits_size() * sizeof(float));
+        return;
+    }
+    ggml_backend_tensor_get_async(backend, m_impl->out.last, out, 0, logits_size() * sizeof(float));
+    ggml_backend_synchronize(backend);
 }
 
 size_t GgmlModel::output_size() const {
