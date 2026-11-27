@@ -9,7 +9,8 @@ import contextlib
 import itertools
 import logging
 import os
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -38,6 +39,18 @@ def _ov_requested(vllm_config: Any) -> bool:
     except Exception:
         return False
     return mode_name == "STOCK_TORCH_COMPILE" and backend == "openvino"
+
+
+# OV options a user may set in compilation_config.inductor_compile_config, its only free-form
+# dict; vLLM forwards it only to inductor, so the plugin reads it here.
+_USER_OPTION_KEYS = ("device", "config")
+
+
+def _ov_user_options(vllm_config: Any) -> dict[str, Any]:
+    """The `_USER_OPTION_KEYS` entries of `compilation_config.inductor_compile_config`."""
+    comp_cfg = getattr(vllm_config, "compilation_config", None)
+    user = getattr(comp_cfg, "inductor_compile_config", None) or {}
+    return {key: user[key] for key in _USER_OPTION_KEYS if key in user}
 
 
 def _find_lm_head(model: "torch.nn.Module") -> "torch.nn.Module | None":
@@ -160,15 +173,59 @@ def _raise_dynamo_cache_limit() -> None:
         logger.debug("[OV plugin] dynamo fail_on_recompile_limit_hit enabled")
 
 
+# Forward inputs sized by the step's token count, and the index of that dim.
+# positions is [3, num_tokens] under M-RoPE, hence -1.
+_TOKEN_DIM_INPUTS = {"input_ids": 0, "positions": -1, "inputs_embeds": 0}
+
+
+def _mark_token_dim_dynamic(compiled_forward: "Callable[..., Any]",
+                            eager_forward: "Callable[..., Any]") -> "Callable[..., Any]":
+    """Wrap `compiled_forward` so dynamo's first trace has a symbolic token count.
+
+    Otherwise the profile run compiles a static model, then the first request a dynamic one.
+    """
+    import inspect
+    import torch
+    param_names = list(inspect.signature(eager_forward).parameters)
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        for name, dim in _TOKEN_DIM_INPUTS.items():
+            tensor = kwargs.get(name)
+            if tensor is None and name in param_names and param_names.index(name) < len(args):
+                tensor = args[param_names.index(name)]
+            if isinstance(tensor, torch.Tensor) and tensor.dim() > 0:
+                torch._dynamo.maybe_mark_dynamic(tensor, dim % tensor.dim())
+        return compiled_forward(*args, **kwargs)
+
+    return forward
+
+
+_SELF_ROOTED_GUARD = re.compile(r"(\w+\()*self\b")
+
+
+def _drop_self_guards(guard_entries: "Sequence[Any]") -> list[bool]:
+    """Dynamo `guard_filter_fn`: drop guards rooted at `self`, keep those on inputs and globals.
+
+    Weights are OV constants, so `self` guards (~20k on Gemma 4, per step) can't change the graph.
+    """
+    # Names are source expressions, possibly wrapped: "self._modules[...]", "dict(type(self)...)".
+    keep = [not _SELF_ROOTED_GUARD.match(entry.name) for entry in guard_entries]
+    logger.debug("[OV plugin] dynamo guards: kept %d of %d", sum(keep), len(keep))
+    return keep
+
+
 def _compile_ov_forward(model: "torch.nn.Module", options: dict[str, Any]) -> None:
     import torch
-    model.forward = torch.compile(
+    if os.environ.get("OV_DYNAMO_FULL_GUARDS", "0") == "0":
+        options = dict(options, guard_filter_fn=_drop_self_guards)
+    compiled = torch.compile(
         model._ov_eager_forward,
         backend="openvino",
         fullgraph=False,
         dynamic=None,
         options=options,
     )
+    model.forward = _mark_token_dim_dynamic(compiled, model._ov_eager_forward)
 
 
 def _rebuild_ov_model(runner: Any, model: "torch.nn.Module") -> None:
@@ -184,7 +241,7 @@ def _rebuild_ov_model(runner: Any, model: "torch.nn.Module") -> None:
         _compile_ov_forward(model, options)
     _install_ov_lm_head(model)
     if recompiled and hasattr(runner, "warming_up_model"):
-        # As at load, the warmup takes dynamo's static first trace, so OV compiles only the dynamic graph.
+        # As at load: the warmup compiles the dynamic serving model, not the first request.
         runner.warming_up_model()
 
 
@@ -235,6 +292,7 @@ def _patch_cpu_model_runner() -> None:
         _model_dtype = getattr(getattr(self, "model_config", None), "dtype", None)
         if _model_dtype is not None:
             options["default_float_type"] = _model_dtype
+        options.update(_ov_user_options(self.vllm_config))
 
         from openvino.frontend.pytorch.torchdynamo.vllm import owns_kv_cache_update
         if owns_kv_cache_update(options):
@@ -270,11 +328,15 @@ def _patch_cpu_model_runner() -> None:
             logger.debug("[OV plugin] affinity widen skipped: %s", _e)
 
         _raise_dynamo_cache_limit()
+        _warn_if_spinning_single_process()
 
         logger.info("[OV plugin] Compiling model with torch.compile backend=openvino")
         # Stops dynamo specializing num_tokens==1, so decode reuses prefill's compiled model.
         import torch.fx.experimental._config as _dynamo_cfg
         _dynamo_cfg.backed_size_oblivious = True
+        # dynamic=None with only the token dim marked dynamic (see
+        # _mark_token_dim_dynamic) -- cheaper than dynamic=True (~1.7x
+        # steady-state cost), which symbolizes every dim.
         self.model._ov_eager_forward = self.model.forward
         self.model._ov_compile_options = options
         _compile_ov_forward(self.model, options)
@@ -474,6 +536,17 @@ def _patch_omp_wait_policy() -> None:
     OMPProcessManager.__init__ = _patched_init
     OMPProcessManager.configure_omp_envs = _patched_configure
     OMPProcessManager._ov_plugin_omp_patched = True
+
+
+def _warn_if_spinning_single_process() -> None:
+    """Warn when an in-process engine runs without OMP_WAIT_POLICY.
+
+    No worker is spawned, so _patch_omp_wait_policy never applies; the script must set it before importing torch.
+    """
+    if os.environ.get("VLLM_ENABLE_V1_MULTIPROCESSING", "1") == "0" and "OMP_WAIT_POLICY" not in os.environ:
+        logger.warning(
+            "[OV plugin] VLLM_ENABLE_V1_MULTIPROCESSING=0 without OMP_WAIT_POLICY: torch's OpenMP "
+            "threads will spin on the cores OV needs; set OMP_WAIT_POLICY=PASSIVE before importing torch")
 
 
 def _patch_lazy_kv_cache() -> None:

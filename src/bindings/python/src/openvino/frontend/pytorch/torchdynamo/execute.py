@@ -72,7 +72,7 @@ def _shape_agnostic_compile(gm, args, options):
         if not (bool_opt(options, "vllm", False) or n_int):
             return False
         if n_int == 0:
-            return bool_opt(options, "dynamic_shapes", True)
+            return bool_opt(options, "dynamic_shapes", True) or bool(_vh.symbolic_tensor_dims(gm, args))
         return len(_vh.symint_shape_sources(gm, args)) == n_int
     except Exception as e:
         logger.debug("shape-agnostic check unavailable: %s", e)
@@ -355,7 +355,9 @@ def openvino_execute(
             if _pa_out is _rh.PA_SKIP:
                 _eager_out = gm(*args)
                 # A profile compile is never reused; drop it so its repacked weights are freed.
-                if _fresh_compile and os.environ.get("OV_EVICT_PROFILE_COMPILE", "1") != "0":
+                # A shape-agnostic compile is the serving model, so it stays.
+                if (_fresh_compile and os.environ.get("OV_EVICT_PROFILE_COMPILE", "1") != "0"
+                        and not _shape_agnostic_compile(gm, args, options)):
                     compiled_cache.pop(cache_key, None)
                     req_cache.pop(cache_key, None)
                     skip_ints_cache.pop(cache_key, None)
