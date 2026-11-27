@@ -26,6 +26,31 @@ if(ggml_FOUND)
             set_target_properties(${_tgt} PROPERTIES IMPORTED_GLOBAL TRUE)
         endif()
     endforeach()
+
+    # Verify that the pre-installed ggml carries the patches OpenVINO expects, rather than
+    # silently building a loader that will fail on long tensor names or PTQ1_0 models.
+    option(OV_GGML_ALLOW_UNPATCHED
+           "Allow a pre-installed ggml lacking OpenVINO's GGML_MAX_NAME/PTQ1_0 patches" OFF)
+    include(CheckCXXSourceCompiles)
+    set(_ov_ggml_saved_libs "${CMAKE_REQUIRED_LIBRARIES}")
+    set(CMAKE_REQUIRED_LIBRARIES ggml::ggml ggml::ggml-base)
+    check_cxx_source_compiles("
+        #include <ggml.h>
+        static_assert(GGML_MAX_NAME >= 128, \"GGML_MAX_NAME must be >= 128\");
+        int main() { return (int)GGML_TYPE_PTQ1_0; }
+    " OV_GGML_HAS_REQUIRED_PATCHES)
+    set(CMAKE_REQUIRED_LIBRARIES "${_ov_ggml_saved_libs}")
+    if(NOT OV_GGML_HAS_REQUIRED_PATCHES)
+        set(_ov_ggml_msg
+            "Pre-installed ggml at ${ggml_DIR} lacks OpenVINO's patches (GGML_MAX_NAME >= 128 and "
+            "GGML_TYPE_PTQ1_0). Remove -Dggml_DIR to use the bundled patched ggml, or pass "
+            "-DOV_GGML_ALLOW_UNPATCHED=ON to proceed without them.")
+        if(OV_GGML_ALLOW_UNPATCHED)
+            message(WARNING "${_ov_ggml_msg}")
+        else()
+            message(FATAL_ERROR "${_ov_ggml_msg}")
+        endif()
+    endif()
     return()
 endif()
 
@@ -46,6 +71,18 @@ if(ENABLE_GGML_VULKAN)
     endif()
     message(STATUS "ggml: Vulkan backend enabled (glslc: ${OV_GLSLC_EXECUTABLE})")
 endif()
+
+# Build bundled ggml as private static libraries embedded in openvino_ggml_cgraph_loader so our
+# ABI-patched ggml (GGML_MAX_NAME=128, GGML_TYPE_PTQ1_0) never ships stock-named shared libraries
+# or exports ggml_* symbols that collide with another ggml (e.g. llama.cpp) in the same process.
+# Set BUILD_SHARED_LIBS as a directory-local variable (CMP0077=NEW) so OpenVINO's cache is untouched.
+cmake_policy(SET CMP0077 NEW)
+set(BUILD_SHARED_LIBS OFF)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
 # ggml's options are plain CMake options, so force them in the cache before the project is added.
 set(GGML_VULKAN        ${ENABLE_GGML_VULKAN} CACHE BOOL "" FORCE)
@@ -84,16 +121,8 @@ foreach(_tgt ggml ggml-base)
     endif()
 endforeach()
 
-# Co-locate the ggml libraries with OpenVINO's own, so the loader finds its backends at runtime
-# without LD_LIBRARY_PATH: ggml_backend_load_all() dlopens ggml-cpu / ggml-vulkan by filename and
-# looks beside the loading library. Also install them, since the loader is useless without them.
-foreach(_tgt ggml ggml-base ggml-cpu ggml-vulkan)
-    if(TARGET ${_tgt})
-        set_target_properties(${_tgt} PROPERTIES
-            LIBRARY_OUTPUT_DIRECTORY "${OV_LIBRARY_OUTPUT_DIRECTORY}"
-            RUNTIME_OUTPUT_DIRECTORY "${OV_LIBRARY_OUTPUT_DIRECTORY}")
-        install(TARGETS ${_tgt}
-                LIBRARY DESTINATION ${OV_CPACK_LIBRARYDIR} COMPONENT ${OV_CPACK_COMP_CORE}
-                RUNTIME DESTINATION ${OV_CPACK_RUNTIMEDIR} COMPONENT ${OV_CPACK_COMP_CORE})
-    endif()
-endforeach()
+# Backends (ggml-cpu, ggml-vulkan) are statically linked and self-register in ggml_backend_registry;
+# tell the loader not to call ggml_backend_load_all(), which would scan disk for external ggml-*.dll/.so.
+if(TARGET ggml)
+    target_compile_definitions(ggml INTERFACE OV_GGML_STATIC_BACKENDS=1)
+endif()

@@ -31,8 +31,16 @@ target_link_libraries(${TARGET_NAME}
             ggml::ggml ggml::ggml-base)
 
 set_target_properties(${TARGET_NAME} PROPERTIES
+    C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
+
+# Keep statically linked ggml symbols private inside the loader shared library.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(${TARGET_NAME} PRIVATE "-Wl,--exclude-libs,ALL")
+elseif(APPLE)
+    target_link_options(${TARGET_NAME} PRIVATE "-Wl,-unexported_symbol,_ggml_*")
+endif()
 
 ov_add_clang_format_target(${TARGET_NAME}_clang FOR_TARGETS ${TARGET_NAME})
 
