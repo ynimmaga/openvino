@@ -130,14 +130,13 @@ def _define_loader() -> type[Any]:
                            zero_point: "torch.Tensor | None") -> "Iterator[tuple[str, torch.Tensor]]":
             """Per-expert 2D `experts.{e}.{gate,up,down}_proj.*` from NNCF's fused 3D experts layout."""
             # 2D: FusedMoE's fused 3D path would misread the packed in/2 dim as a transposed hidden dim.
-            if zero_point is None:
-                raise ValueError(f"[OV plugin] {LOAD_FORMAT}: {module} is symmetric; MoE experts need int4 asym")
             experts, out_features, groups = scale.shape[:3]
             fields = {
                 "qweight": stored.reshape(experts, out_features, -1),
                 "scale": scale.reshape(experts, out_features, groups),
-                "zero_point": _unpack_uint4(zero_point).reshape(experts, out_features, groups),
             }
+            if zero_point is not None:
+                fields["zero_point"] = _unpack_uint4(zero_point).reshape(experts, out_features, groups)
             parent, _, leaf = module.rpartition(".")
             if leaf == "gate_up_proj":
                 # HF's fused gate_up is [gate; up] along out, as vLLM's w13 is [w1; w3].

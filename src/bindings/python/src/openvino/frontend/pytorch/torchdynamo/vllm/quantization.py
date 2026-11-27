@@ -173,8 +173,8 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
                 if self._is_quantized(prefix):
                     return NNCFLinearMethod(self)
                 return UnquantizedLinearMethod()
-            # Only grouped int4 asym has a compressed MoE path; None leaves the experts dense.
-            if (isinstance(layer, RoutedExperts) and self.bits == 4 and not self.sym and self.group_size > 0
+            # Only grouped int4 has a compressed MoE path; None leaves the experts dense.
+            if (isinstance(layer, RoutedExperts) and self.bits == 4 and self.group_size > 0
                     and self._experts_are_quantized(layer, prefix)):
                 return NNCFFusedMoEMethod(self, layer.moe_config)
             return None
@@ -260,18 +260,18 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
             return functional.linear(inputs, weight, bias)
 
     class NNCFFusedMoEMethod(FusedMoEMethodBase):
-        """Routed experts kept int4 asym, decoded by `fused_moe.nncf_moe_forward`.
+        """Routed experts kept int4 (asym or sym), decoded by `fused_moe.nncf_moe_forward`.
 
         Monolithic, so routing is vLLM's torch `select_experts` (the modular router calls `_moe_C.topk_softmax`,
         which OV cannot take). Loads into fused `w13_*`, then splits gate and up: a slice between a constant
         and its decompression would hide the compressed weight from OV.
         """
 
-        _FIELDS = ("qweight", "scale", "zero_point")
-
         def __init__(self, quant_config: NNCFConfig, moe: Any) -> None:
             super().__init__(moe)
             self.quant_config = quant_config
+            # Symmetric experts have no zero_point: the decompression chain is just Multiply.
+            self._fields = ("qweight", "scale") if quant_config.sym else ("qweight", "scale", "zero_point")
 
         @property
         def is_monolithic(self) -> bool:
@@ -295,9 +295,11 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
                                      f"group_size {config.group_size}")
                 groups = cols // config.group_size
                 # zero_point unpacked, as for linears.
-                for field, shape, dtype in (("qweight", (rows, cols // 2), torch.uint8),
-                                            ("scale", (rows, groups), config.scale_dtype),
-                                            ("zero_point", (rows, groups), torch.uint8)):
+                specs = {"qweight": ((rows, cols // 2), torch.uint8),
+                         "scale": ((rows, groups), config.scale_dtype),
+                         "zero_point": ((rows, groups), torch.uint8)}
+                for field in self._fields:
+                    shape, dtype = specs[field]
                     param = torch.nn.Parameter(torch.empty(num_experts, *shape, dtype=dtype), requires_grad=False)
                     layer.register_parameter(f"{name}_{field}", param)
                     set_weight_attrs(param, attrs)
@@ -305,7 +307,7 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
 
         def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
             # scale/zero_point gain their broadcast dim here, as constants (see _dequantize).
-            for field in self._FIELDS:
+            for field in self._fields:
                 tensors = {"w2": getattr(layer, f"w2_{field}").data}
                 tensors["w1"], tensors["w3"] = getattr(layer, f"w13_{field}").data.chunk(2, dim=1)
                 delattr(layer, f"w13_{field}")
@@ -329,9 +331,9 @@ def _define_classes() -> tuple[type[Any], type[Any], type[Any]]:
                 custom_routing_function=layer.custom_routing_function, scoring_func=layer.scoring_func,
                 routed_scaling_factor=layer.routed_scaling_factor,
                 e_score_correction_bias=layer.e_score_correction_bias)
-            weights = [[getattr(layer, f"{name}_{field}") for field in self._FIELDS] for name in ("w1", "w3", "w2")]
+            weights = [[getattr(layer, f"{name}_{field}") for field in self._fields] for name in ("w1", "w3", "w2")]
             return nncf_moe_forward(x, weights, topk_weights, topk_ids, layer.activation.value,
-                                    lambda q, s, zp: _dequantize(q, s, 4, layer.nncf_out_dtype, zero_point=zp))
+                                    lambda q, s, zp=None: _dequantize(q, s, 4, layer.nncf_out_dtype, zero_point=zp))
 
     # Pickle stores module + qualname; the module `__getattr__` resolves these.
     for cls in (NNCFConfig, NNCFLinearMethod, NNCFFusedMoEMethod):

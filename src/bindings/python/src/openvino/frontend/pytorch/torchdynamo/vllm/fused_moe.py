@@ -5,7 +5,7 @@
 """Replace vLLM's opaque _C.cpu_fused_moe with the tiled MoE block the CPU plugin lowers to GatherMatmul.
 
 If ConvertTiledMoeBlockTo3GatherMatmuls doesn't match, the block runs as dense batched matmuls over all experts.
-NNCF int4 experts (quantization.NNCFFusedMoEMethod) skip vLLM's op and trace the same block via nncf_moe_forward.
+NNCF int4 (asym or sym) experts (quantization.NNCFFusedMoEMethod) skip vLLM's op and trace the same block via nncf_moe_forward.
 """
 
 
@@ -111,9 +111,9 @@ def _activation(gate: "torch.Tensor", act: str) -> "torch.Tensor":
 
 def nncf_moe_forward(tokens: "torch.Tensor", weights: "list[list[torch.Tensor]]", topk_weights: "torch.Tensor",
                      topk_ids: "torch.Tensor", act: str,
-                     dequantize: "Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]",
+                     dequantize: "Callable[..., torch.Tensor]",
                      ) -> "torch.Tensor":
-    """Run MoE over NNCF experts, `weights` = [qweight, scale, zero_point] for w1 (gate), w3 (up), w2."""
+    """Run MoE over NNCF experts, `weights` = [qweight, scale(, zero_point if asym)] for w1 (gate), w3 (up), w2."""
     # Traced: moe_tiled over the decompression chains (-> GatherMatmulCompressed). Eager: routed experts only.
     import torch
     from torch.nn import functional
