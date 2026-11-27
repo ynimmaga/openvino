@@ -110,7 +110,9 @@ struct GgmlModel::Impl {
     /// Pick and initialise a ggml backend. Empty name means GPU, then IGPU (Intel integrated
     /// graphics register as IGPU, not GPU), then CPU.
     void init_backend(const std::string& backend_name) {
+#ifndef OV_GGML_STATIC_BACKENDS
         ggml_backend_load_all();
+#endif
         ggml_backend_dev_t dev = nullptr;
         if (!backend_name.empty()) {
             dev = ggml_backend_dev_by_name(backend_name.c_str());
