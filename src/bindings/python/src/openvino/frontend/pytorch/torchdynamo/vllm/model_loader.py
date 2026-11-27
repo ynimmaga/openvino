@@ -33,37 +33,46 @@ def _hook_key(weight_name: str, field: str) -> str:
 
 def _dequantize(stored: "torch.Tensor", scale: "torch.Tensor", zero_point: "torch.Tensor | None",
                 out_dtype: "torch.dtype") -> "torch.Tensor":
-    """Dense [out, in] weight from any NNCF mode, computed in the scale's dtype as NNCF's decompressors do."""
-    out_features = scale.shape[0]
-    if scale.dim() == 3:
-        groups = scale.shape[1]
-        weight = _unpack_uint4(stored).reshape(out_features, groups, -1)
+    """Dense [..., out, in] weight from any NNCF mode, in the scale's dtype; leading dims are fused MoE experts."""
+    if scale.dim() >= 3:
+        rows = scale.shape[:-2]
+        weight = _unpack_uint4(stored).reshape(*scale.shape[:-1], -1)
         weight = weight.type(scale.dtype)
         if zero_point is None:
             # Symmetric nibbles carry a +8 bias to stay unsigned.
             weight = weight - 8
         else:
-            zp = _unpack_uint4(zero_point).reshape(out_features, groups, 1)
+            zp = _unpack_uint4(zero_point).reshape(scale.shape)
             weight = weight - zp.type(scale.dtype)
     else:
+        rows = scale.shape[:1]
         weight = stored.type(scale.dtype)
         if zero_point is not None:
             weight = weight - zero_point.type(scale.dtype)
     weight = weight * scale
-    return weight.reshape(out_features, -1).type(out_dtype)
+    return weight.reshape(*rows, -1).type(out_dtype)
 
 
 def _pt2_state_dict(path: str) -> "dict[str, torch.Tensor]":
-    """Persistent parameters and buffers of a `torch.export.save` archive (exported with return_dict=False)."""
-    import torch
+    """Weights of a `torch.export.save` archive, read without its graph (pytree can't rebuild HF ModelOutputs)."""
+    import io
 
+    import torch
+    from torch.export.pt2_archive._package import PT2ArchiveReader, _load_state_dict
+
+    state: "dict[str, torch.Tensor]" = {}
     try:
-        exported = torch.export.load(path)
+        with PT2ArchiveReader(path) as archive:
+            for entry in archive.get_file_names():
+                if entry.startswith("models/") and entry.endswith(".json"):
+                    weights = _load_state_dict(archive, entry.removeprefix("models/").removesuffix(".json"))
+                    if isinstance(weights, bytes):
+                        # Legacy archives pickle the whole state_dict; weights_only refuses non-tensor objects.
+                        weights = torch.load(io.BytesIO(weights), weights_only=True)
+                    state.update(weights)
     except Exception as exc:
-        raise ValueError(
-            f"[OV plugin] {LOAD_FORMAT}: cannot read {path}: {exc}. Export "
-            "with kwargs return_dict=False so the output is a plain tuple") from exc
-    return exported.state_dict
+        raise ValueError(f"[OV plugin] {LOAD_FORMAT}: cannot read weights from {path}: {exc}") from exc
+    return state
 
 
 def _define_loader() -> type[Any]:
@@ -74,6 +83,7 @@ def _define_loader() -> type[Any]:
     from safetensors import safe_open
     from vllm.model_executor.model_loader import register_model_loader
     from vllm.model_executor.model_loader.default_loader import DefaultModelLoader
+    from vllm.model_executor.model_loader.weight_utils import maybe_remap_moe_expert_param_name
 
     @register_model_loader(LOAD_FORMAT)
     class NNCFHooksModelLoader(DefaultModelLoader):
@@ -101,6 +111,43 @@ def _define_loader() -> type[Any]:
                     leaf = fused
                     break
             return f"{parent}.{leaf}.qweight" in params
+
+        def _experts_are_quantized(self, model: "torch.nn.Module", params: "dict[str, torch.nn.Parameter]",
+                                   experts: str) -> bool:
+            """Was the FusedMoE that HF module `experts` (`...mlp.experts`) loads into built int4?"""
+            vllm_experts = self._to_vllm(model, experts)
+            return vllm_experts is not None and any(
+                f"{vllm_experts}{routed}.w13_qweight" in params for routed in ("", ".routed_experts"))
+
+        def _expert_is_quantized(self, model: "torch.nn.Module", params: "dict[str, torch.nn.Parameter]",
+                                 module: str) -> bool:
+            """Is `module` one expert's projection (`...experts.{e}.gate_proj`) of a FusedMoE built int4?"""
+            experts, expert, _ = (["", ""] + module.rsplit(".", 2))[-3:]
+            return expert.isdigit() and self._experts_are_quantized(model, params, experts)
+
+        @staticmethod
+        def _expert_shards(module: str, stored: "torch.Tensor", scale: "torch.Tensor",
+                           zero_point: "torch.Tensor | None") -> "Iterator[tuple[str, torch.Tensor]]":
+            """Per-expert 2D `experts.{e}.{gate,up,down}_proj.*` from NNCF's fused 3D experts layout."""
+            # 2D: FusedMoE's fused 3D path would misread the packed in/2 dim as a transposed hidden dim.
+            experts, out_features, groups = scale.shape[:3]
+            fields = {
+                "qweight": stored.reshape(experts, out_features, -1),
+                "scale": scale.reshape(experts, out_features, groups),
+            }
+            if zero_point is not None:
+                fields["zero_point"] = _unpack_uint4(zero_point).reshape(experts, out_features, groups)
+            parent, _, leaf = module.rpartition(".")
+            if leaf == "gate_up_proj":
+                # HF's fused gate_up is [gate; up] along out, as vLLM's w13 is [w1; w3].
+                half = out_features // 2
+                projections = (("gate_proj", slice(0, half)), ("up_proj", slice(half, None)))
+            else:
+                projections = ((leaf, slice(None)),)
+            for expert in range(experts):
+                for projection, rows in projections:
+                    for field, tensor in fields.items():
+                        yield f"{parent}.{expert}.{projection}.{field}", tensor[expert, rows]
 
         def _kv_shared_zeros(self, model: "torch.nn.Module", params: "dict[str, torch.nn.Parameter]",
                              seen: set[str], out_dtype: "torch.dtype") -> "Iterator[tuple[str, torch.Tensor]]":
@@ -180,8 +227,12 @@ def _define_loader() -> type[Any]:
                     zp = get_tensor(zp_key) if zp_key in keys else None
                     module = name.removesuffix(".weight")
 
-                    if self._target_is_quantized(model, params, module):
+                    if scale.dim() == 4 and self._experts_are_quantized(model, params, module.rpartition(".")[0]):
+                        yield from self._expert_shards(module, stored, scale, zp)
+                    elif (self._target_is_quantized(model, params, module)
+                          or self._expert_is_quantized(model, params, module)):
                         # Already row-major over (out, in) or (out, in/2), so the reshapes are free.
+                        # A per-expert projection lands in FusedMoE's w13_*/w2_* through its expert mapping.
                         out_features = scale.shape[0]
                         yield f"{module}.qweight", stored.reshape(out_features, -1)
                         yield f"{module}.scale", scale.reshape(out_features, -1)
@@ -196,7 +247,12 @@ def _define_loader() -> type[Any]:
         def load_weights(self, model: "torch.nn.Module", model_config: "ModelConfig") -> None:
             loaded = model.load_weights(self._weights(model, model_config))
             # DefaultModelLoader skips this check for quantized models; here it catches unknown layouts.
-            missing = {n for n, _ in model.named_parameters()} - set(loaded or ())
+            params = dict(model.named_parameters())
+            # MoERunner reports `experts.w13_weight`; the parameter is `experts.routed_experts.w13_weight`.
+            # vLLM's remap knows a fixed suffix list, which lacks NNCF's `w13_zero_point`.
+            loaded = {maybe_remap_moe_expert_param_name(n, params) for n in loaded or ()}
+            routed = {n.replace(".experts.", ".experts.routed_experts.", 1) for n in loaded - params.keys()}
+            missing = set(params) - loaded - routed
             if missing:
                 raise ValueError(
                     f"[OV plugin] {LOAD_FORMAT}: not initialized from "
